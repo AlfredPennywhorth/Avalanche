@@ -22,7 +22,7 @@ import {
     signOut,
     onAuthStateChanged
 } from 'firebase/auth';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { evaluateComment } from './services/gemini';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -971,6 +971,7 @@ const CameraView = ({ user, onExit }) => {
     const timerRef = useRef<any>(null);
     const [recording, setRecording] = useState(false);
     const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
     const [elapsed, setElapsed] = useState(0);
     const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
     const [countdown, setCountdown] = useState<number | null>(null);
@@ -1025,31 +1026,45 @@ const CameraView = ({ user, onExit }) => {
             const filename = `videos/${user?.uid}_${Date.now()}.webm`;
             const storageRef = ref(storage, filename);
 
-            await uploadBytes(storageRef, blob);
-            const downloadUrl = await getDownloadURL(storageRef);
+            const uploadTask = uploadBytesResumable(storageRef, blob, { contentType: 'video/webm' });
 
-            await addDoc(collection(db, 'posts'), {
-                type: 'video',
-                videoUrl: downloadUrl,
-                authorId: user.uid,
-                authorName: user.name || user.email,
-                authorAvatar: user.avatar || '🧊',
-                authorRole: user.role || 'teacher',
-                authorSchool: user.school || '',
-                likes: [],
-                commentCount: 0,
-                createdAt: serverTimestamp(),
-                verified: false
-            });
+            uploadTask.on('state_changed',
+                (snapshot) => {
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    setUploadProgress(progress);
+                },
+                (error) => {
+                    console.error("Video upload failed:", error);
+                    setError("Failed to upload video. ❄️");
+                    setUploading(false);
+                },
+                async () => {
+                    const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
 
-            // Reward 15 Snow Points
-            if (user?.uid) {
-                await updateDoc(doc(db, 'users', user.uid), {
-                    snowPoints: increment(15)
-                });
-            }
+                    await addDoc(collection(db, 'posts'), {
+                        type: 'video',
+                        videoUrl: downloadUrl,
+                        authorId: user.uid,
+                        authorName: user.name || user.email,
+                        authorAvatar: user.avatar || '🧊',
+                        authorRole: user.role || 'teacher',
+                        authorSchool: user.school || '',
+                        likes: [],
+                        commentCount: 0,
+                        createdAt: serverTimestamp(),
+                        verified: false
+                    });
 
-            onExit();
+                    // Reward 15 Snow Points
+                    if (user?.uid) {
+                        await updateDoc(doc(db, 'users', user.uid), {
+                            snowPoints: increment(15)
+                        });
+                    }
+
+                    onExit();
+                }
+            );
         } catch (e) {
             console.error("Video upload failed:", e);
             setError("Failed to upload video. ❄️");
@@ -1094,7 +1109,7 @@ const CameraView = ({ user, onExit }) => {
                     <div style={{ padding: '20px', display: 'flex', gap: '10px', background: '#000' }}>
                         <button onClick={() => setRecordedUrl(null)} disabled={uploading} style={{ flex: 1, padding: '14px', borderRadius: '14px', background: 'rgba(255,255,255,0.1)', color: 'white', border: 'none', opacity: uploading ? 0.5 : 1 }}>Retake</button>
                         <button onClick={handlePostVideo} disabled={uploading} style={{ flex: 1, padding: '14px', background: 'var(--cyan-neon)', borderRadius: '14px', color: '#020817', fontWeight: 700, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-                            {uploading ? <><span className="material-symbols-outlined" style={{ animation: 'spin 1s linear infinite' }}>ac_unit</span> Uploading...</> : 'Post ❄️'}
+                            {uploading ? <><span className="material-symbols-outlined" style={{ animation: 'spin 1s linear infinite' }}>ac_unit</span> {`Uploading... ${Math.round(uploadProgress)}%`}</> : 'Post ❄️'}
                         </button>
                     </div>
                 </div>
