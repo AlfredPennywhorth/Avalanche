@@ -213,6 +213,27 @@ body::before {
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
 }
 
+.delete-btn {
+  color: #ff4b4b !important;
+}
+
+.delete-btn .interaction-icon-wrapper {
+  border-color: rgba(255, 75, 75, 0.3) !important;
+  background: rgba(255, 75, 75, 0.1) !important;
+}
+
+.speaking-glow {
+  box-shadow: 0 0 20px rgba(0, 229, 255, 0.8) !important;
+  border-color: var(--cyan-neon) !important;
+  animation: pulse-glow 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse-glow {
+  0% { box-shadow: 0 0 10px rgba(0, 229, 255, 0.4); transform: scale(1); }
+  50% { box-shadow: 0 0 25px rgba(0, 229, 255, 0.9); transform: scale(1.05); }
+  100% { box-shadow: 0 0 10px rgba(0, 229, 255, 0.4); transform: scale(1); }
+}
+
 .points-badge {
   display: inline-flex;
   align-items: center;

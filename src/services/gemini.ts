@@ -23,7 +23,7 @@ export const evaluateComment = async (text: string): Promise<CommentEvaluation> 
     }
 
     try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
         const prompt = `
 You are a moderation and language analysis assistant for a social feed app called Avalanche.
@@ -56,5 +56,31 @@ Comment: "${text}"
     } catch (error) {
         console.error('Error evaluating comment with Gemini:', error);
         return { error: true, isEnglish: false, isConstructive: true };
+    }
+};
+
+export const generateAvaResponse = async (context: string, type: 'post' | 'mention'): Promise<string | null> => {
+    if (!genAI) {
+        console.warn('Gemini is not initialized.');
+        return null;
+    }
+
+    try {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+        const prompt = type === 'post'
+            ? `You are Ava, a friendly and encouraging native English teacher participating in a social app called Avalanche. A student just made a new post with the text: "${context}". Write a short, encouraging comment (max 2 sentences) complementing their effort, giving a tiny English tip related to their text, or asking a fun follow-up question in English. Use emojis. ❄️`
+            : `You are Ava, a friendly English teacher participating in an app called Avalanche. A student mentioned you in a comment saying: "${context}". Reply directly to them in a short, friendly, and helpful manner (max 2 sentences). Use emojis. ❄️`;
+
+        const result = await model.generateContent(prompt);
+        return result.response.text().trim();
+    } catch (error: any) {
+        const status = error?.status || error?.httpStatusCode || error?.code || 'unknown';
+        const message = error?.message || JSON.stringify(error);
+        console.error(`[Ava] Error generating response — Status: ${status} | Message: ${message}`);
+        if (status === 429 || message.includes('429') || message.includes('quota') || message.includes('rate')) {
+            console.warn('[Ava] Rate limit hit. Ava will be silent for this request.');
+        }
+        return null;
     }
 };
