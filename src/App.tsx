@@ -53,6 +53,7 @@ export default function App() {
     const [view, setView] = useState<'home' | 'discover' | 'create' | 'notifications' | 'profile' | 'leaderboard'>('home');
 
     const [allPosts, setAllPosts] = useState<any[]>([]);
+    const [unreadCount, setUnreadCount] = useState(0);
 
     useEffect(() => {
         const unsub = onAuthStateChanged(auth, async (u) => {
@@ -76,10 +77,19 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        if (!user) return;
+        if (!user?.uid) return;
         const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'));
         const unsub = onSnapshot(q, (snap) => {
             setAllPosts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        });
+        return () => unsub();
+    }, [user?.uid]);
+
+    useEffect(() => {
+        if (!user?.uid) return;
+        const q = query(collection(db, 'notifications'), where('recipientUid', '==', user.uid), where('read', '==', false));
+        const unsub = onSnapshot(q, (snap) => {
+            setUnreadCount(snap.size);
         });
         return () => unsub();
     }, [user?.uid]);
@@ -139,8 +149,25 @@ export default function App() {
                     <div className={`nav-item ${view === 'leaderboard' ? 'active' : ''}`} onClick={() => setView('leaderboard')}>
                         <span className="material-symbols-outlined">emoji_events</span>
                     </div>
-                    <div className={`nav-item ${view === 'notifications' ? 'active' : ''}`} onClick={() => setView('notifications')}>
+                    <div 
+                        className={`nav-item ${view === 'notifications' ? 'active' : ''}`} 
+                        onClick={() => setView('notifications')}
+                        style={{ position: 'relative' }}
+                    >
                         <span className="material-symbols-outlined">notifications</span>
+                        {unreadCount > 0 && (
+                            <div style={{
+                                position: 'absolute',
+                                top: '8px',
+                                right: '14px',
+                                width: '10px',
+                                height: '10px',
+                                background: '#FF3B30',
+                                borderRadius: '50%',
+                                border: '2px solid var(--bg-main)',
+                                boxShadow: '0 0 8px rgba(255,59,48,0.5)'
+                            }} />
+                        )}
                     </div>
                     <div className={`nav-item ${view === 'profile' ? 'active' : ''}`} onClick={() => setView('profile')}>
                         <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'linear-gradient(45deg, var(--glacial-mid), var(--glacial-deep))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', border: view === 'profile' ? '1px solid var(--cyan-neon)' : 'none', overflow: 'hidden' }}>
@@ -480,6 +507,7 @@ const TextPostView = ({ user, onExit }) => {
             if (!users.some((u: any) => u.name === 'Ava')) {
                 users.push({ id: 'ava-ai', name: 'Ava', role: 'teacher', photo: '/ava-avatar.png' });
             }
+            // Ensure Ava is always in allUsers for notification matching
             setAllUsers(users);
         });
         return () => unsub();
@@ -559,6 +587,7 @@ const TextPostView = ({ user, onExit }) => {
                                 recipientUid: targetUser.id,
                                 senderName: user.name || 'Avalanche User',
                                 senderAvatar: user.avatar || '🧊',
+                                senderPhoto: user.photo || null,
                                 type: 'mention',
                                 postId: docRef.id,
                                 text: `has mentioned you in a new post: "${text.trim().substring(0, 30)}..."`,
@@ -726,17 +755,31 @@ const HomeFeed = ({ user, allPosts }) => {
         const synth = window.speechSynthesis;
         const utterance = new SpeechSynthesisUtterance(cleanText);
         
+        // Set the language strictly to en-US
+        utterance.lang = 'en-US';
+        
         // Find a native English voice
         const voices = synth.getVoices();
-        const englishVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google')) || voices.find(v => v.lang.startsWith('en'));
-        if (englishVoice) utterance.voice = englishVoice;
+        // Priority: US English Google voice, then UK English, then any English voice
+        const englishVoice = 
+            voices.find(v => v.lang === 'en-US' && v.name.includes('Google')) || 
+            voices.find(v => v.lang === 'en-GB' && v.name.includes('Google')) ||
+            voices.find(v => v.lang.startsWith('en-US')) ||
+            voices.find(v => v.lang.startsWith('en'));
+
+        if (englishVoice) {
+            utterance.voice = englishVoice;
+        }
         
         utterance.rate = 1.0;
-        utterance.pitch = 1.1;
+        utterance.pitch = 1.15; // Slightly higher for a friendly AI feel
         
         utterance.onstart = () => setAvaSpeaking(commentId);
         utterance.onend = () => setAvaSpeaking(null);
-        utterance.onerror = () => setAvaSpeaking(null);
+        utterance.onerror = (e) => {
+            console.error("Speech error:", e);
+            setAvaSpeaking(null);
+        };
         
         synth.speak(utterance);
     };
@@ -898,9 +941,10 @@ const HomeFeed = ({ user, allPosts }) => {
                     recipientUid: targetUser.id,
                     senderName: user.name || 'Avalanche User',
                     senderAvatar: user.avatar || '🧊',
+                    senderPhoto: user.photo || null,
                     type: 'mention',
                     postId: activePostId,
-                    text: `mentioned you in a comment!`,
+                    text: `mentioned you in a comment! ❄️`,
                     read: false,
                     createdAt: serverTimestamp()
                 });
@@ -925,7 +969,7 @@ const HomeFeed = ({ user, allPosts }) => {
                 ) : (
                     allPosts.map((post: any) => {
                         const isLiked = likedPosts.includes(post.id);
-                        const isAva = post.authorName === 'Ava';
+                        const isAva = post.authorName === 'Ava' || post.authorId === 'ava-ai';
 
                         return (
                             <div key={post.id} className="reel-item">
@@ -1057,69 +1101,74 @@ const HomeFeed = ({ user, allPosts }) => {
             </div>
 
             {showComments && activePostId && (
-                <div className="frosted fade-in" style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: '80vh', zIndex: 2000, borderTop: '2px solid var(--cyan-neon)', display: 'flex', flexDirection: 'column', maxWidth: '600px', margin: '0 auto', boxShadow: '0 -20px 60px rgba(0,0,0,0.8)' }}>
-                    <div className="comment-zone-header" style={{ position: 'relative' }}>
-                        English Zone ❄️
-                        <span className="material-symbols-outlined" style={{ position: 'absolute', right: '16px', top: '50%', transform: 'translateY(-50%)', cursor: 'pointer' }} onClick={() => { setShowComments(false); setActivePostId(null); }}>close</span>
+                <div className="comments-drawer frosted active">
+                    <div style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                        <h3 style={{ margin: 0 }}>Comments ❄️</h3>
+                        <span className="material-symbols-outlined" style={{ cursor: 'pointer' }} onClick={() => { setShowComments(false); setActivePostId(null); setReplyingTo(null); }}>close</span>
                     </div>
 
-                    <div style={{ padding: '20px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        {comments.length === 0 ? (
-                            <div style={{ textAlign: 'center', marginTop: '60px', opacity: 0.3 }}>
-                                <span className="material-symbols-outlined" style={{ fontSize: '48px' }}>chat_bubble_outline</span>
-                                <p style={{ marginTop: '10px' }}>Be the first to comment!</p>
-                            </div>
-                        ) : comments.map(c => (
-                            <div key={c.id}>
-                                <div className="frosted" style={{
-                                    padding: '14px', borderRadius: '18px',
-                                    background: c.authorId === 'ava-ai' ? 'rgba(0,229,255,0.05)' : 'rgba(255,255,255,0.03)',
-                                    border: c.authorId === 'ava-ai' ? '1px solid rgba(0,229,255,0.2)' : 'none'
-                                }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                        <p style={{ fontWeight: 700, fontSize: '13px', color: c.authorId === 'ava-ai' ? 'var(--cyan-neon)' : 'var(--cyan-neon)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                            {c.author}
-                                            {c.authorId === 'ava-ai' && <span style={{ fontSize: '10px', background: 'rgba(0,229,255,0.15)', padding: '1px 6px', borderRadius: '8px' }}>AI ❄️</span>}
-                                            {c.authorId === 'ava-ai' && (
-                                                <span 
-                                                    className="material-symbols-outlined" 
-                                                    style={{ fontSize: '18px', cursor: 'pointer', color: avaSpeaking === c.id ? 'var(--cyan-neon)' : 'rgba(255,255,255,0.5)', marginLeft: '4px' }}
-                                                    onClick={() => speakAva(c.text, c.id)}
-                                                >
-                                                    {avaSpeaking === c.id ? 'volume_up' : 'volume_down'}
-                                                </span>
-                                            )}
-                                        </p>
-                                        {c.authorId !== 'ava-ai' && (
-                                            <span style={{ fontSize: '11px', color: 'var(--text-dim)', cursor: 'pointer' }} onClick={() => { setReplyingTo(c.id); setTimeout(() => commentInputRef.current?.focus(), 50); }}>Reply</span>
-                                        )}
-                                        {c.authorId === 'ava-ai' && c.ackedBy?.includes(user?.uid) && (
-                                            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>✅ read</span>
-                                        )}
-                                    </div>
-                                    <p style={{ fontSize: '14px', color: 'white' }}>{renderTextWithMentions(c.text)}</p>
-                                    {c.authorId === 'ava-ai' && !c.ackedBy?.includes(user?.uid) && (
-                                        <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                                            <button
-                                                onClick={async () => await updateDoc(doc(db, 'posts', activePostId!, 'comments', c.id), { ackedBy: arrayUnion(user.uid) })}
-                                                style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(0,229,255,0.1)', border: '1px solid rgba(0,229,255,0.3)', color: 'white', cursor: 'pointer', fontSize: '16px' }}
-                                            >👍</button>
-                                            <button
-                                                onClick={async () => await updateDoc(doc(db, 'posts', activePostId!, 'comments', c.id), { ackedBy: arrayUnion(user.uid) })}
-                                                style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(0,229,255,0.1)', border: '1px solid rgba(0,229,255,0.3)', color: 'var(--cyan-neon)', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
-                                            >✅ Got it!</button>
+                    <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
+                        {comments.length === 0 ? <p style={{ textAlign: 'center', opacity: 0.5, marginTop: '40px' }}>No comments yet. Be the first to start the avalanche!</p> : (
+                            comments.map(c => {
+                                const isAva = c.authorId === 'ava-ai';
+                                return (
+                                    <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
+                                        <div style={{ display: 'flex', gap: '10px' }}>
+                                            <div style={{ width: '32px', height: '32px', borderRadius: '50%', overflow: 'hidden', border: isAva ? '1px solid var(--cyan-neon)' : '1px solid rgba(255,255,255,0.1)', flexShrink: 0 }}>
+                                                {isAva ? (
+                                                    <img src="/ava-avatar.png" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                ) : (
+                                                    c.authorPhoto ? <img src={c.authorPhoto} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <div style={{ width: '100%', height: '100%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px' }}>{c.author?.charAt(0) || '🧊'}</div>
+                                                )}
+                                            </div>
+                                            <div className="frosted" style={{
+                                                flex: 1,
+                                                padding: '12px 14px', borderRadius: '18px',
+                                                background: isAva ? 'rgba(0,229,255,0.05)' : 'rgba(255,255,255,0.03)',
+                                                border: isAva ? '1px solid rgba(0,229,255,0.2)' : 'none'
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                                    <p style={{ fontWeight: 700, fontSize: '13px', color: isAva ? 'var(--cyan-neon)' : 'var(--cyan-neon)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                        {c.author}
+                                                        {isAva && <span style={{ fontSize: '10px', background: 'rgba(0,229,255,0.15)', padding: '1px 6px', borderRadius: '8px' }}>AI ❄️</span>}
+                                                        {isAva && (
+                                                            <span 
+                                                                className="material-symbols-outlined" 
+                                                                style={{ fontSize: '18px', cursor: 'pointer', color: avaSpeaking === c.id ? 'var(--cyan-neon)' : 'rgba(255,255,255,0.5)', marginLeft: '4px' }}
+                                                                onClick={() => speakAva(c.text, c.id)}
+                                                            >
+                                                                {avaSpeaking === c.id ? 'volume_up' : 'volume_down'}
+                                                            </span>
+                                                        )}
+                                                    </p>
+                                                    {!isAva && (
+                                                        <span style={{ fontSize: '11px', color: 'var(--text-dim)', cursor: 'pointer' }} onClick={() => { setReplyingTo(c.id); setTimeout(() => commentInputRef.current?.focus(), 50); }}>Reply</span>
+                                                    )}
+                                                    {isAva && c.ackedBy?.includes(user?.uid) && (
+                                                        <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>✅ read</span>
+                                                    )}
+                                                </div>
+                                                <p style={{ fontSize: '14px', color: 'white' }}>{renderTextWithMentions(c.text)}</p>
+                                                {isAva && !c.ackedBy?.includes(user?.uid) && (
+                                                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                                                        <button
+                                                            onClick={async () => await updateDoc(doc(db, 'posts', activePostId, 'comments', c.id), { ackedBy: arrayUnion(user.uid) })}
+                                                            style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(0,229,255,0.1)', border: '1px solid rgba(0,229,255,0.3)', color: 'var(--cyan-neon)', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+                                                        >✅ Got it!</button>
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
-                                    )}
-                                </div>
-                                {(c.replies || []).map((r: any) => (
-                                    <div key={r.id} className="frosted" style={{ padding: '10px', marginTop: '6px', marginLeft: '24px', borderLeft: '2px solid var(--cyan-neon)', borderRadius: '14px', background: 'rgba(255,255,255,0.01)' }}>
-                                        <p style={{ fontWeight: 600, fontSize: '12px', color: 'white' }}>{r.author}</p>
-                                        <p style={{ fontSize: '13px', color: 'var(--text-dim)' }}>{renderTextWithMentions(r.text)}</p>
+                                        {(c.replies || []).map((r: any) => (
+                                            <div key={r.id} className="frosted" style={{ padding: '10px', marginTop: '4px', marginLeft: '42px', borderLeft: '2px solid var(--cyan-neon)', borderRadius: '14px', background: 'rgba(255,255,255,0.01)' }}>
+                                                <p style={{ fontWeight: 600, fontSize: '12px', color: 'white' }}>{r.author}</p>
+                                                <p style={{ fontSize: '13px', color: 'var(--text-dim)' }}>{renderTextWithMentions(r.text)}</p>
+                                            </div>
+                                        ))}
                                     </div>
-                                ))}
-                            </div>
-
-                        ))}
+                                );
+                            })
+                        )}
                     </div>
 
                     <div style={{ padding: '16px 20px 40px', background: 'rgba(0,0,0,0.4)', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
@@ -1148,6 +1197,7 @@ const HomeFeed = ({ user, allPosts }) => {
             )}
         </div>
     );
+
 };
 
 // ─── Discover/Notifications/Profile Views ──────────────────────────────────────
@@ -1208,7 +1258,9 @@ const NotificationsView = ({ user }) => {
                         {notifications.map(n => (
                             <div key={n.id} className={`frosted ${!n.read ? 'neon-border' : ''}`} style={{ padding: '16px', borderRadius: '16px', opacity: n.read ? 0.7 : 1 }} onClick={async () => await updateDoc(doc(db, 'notifications', n.id), { read: true })}>
                                 <div style={{ display: 'flex', gap: '12px' }}>
-                                    <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: n.senderName === 'Ava' ? 'var(--cyan-neon)' : 'var(--glacial-mid)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{n.senderAvatar || '👤'}</div>
+                                    <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: n.senderName === 'Ava' ? 'var(--cyan-neon)' : 'var(--glacial-mid)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', border: n.senderName === 'Ava' ? '1px solid var(--cyan-neon)' : 'none' }}>
+                                        {n.senderPhoto ? <img src={n.senderPhoto} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (n.senderAvatar || '👤')}
+                                    </div>
                                     <div>
                                         <p style={{ fontSize: '14px' }}>
                                             <strong style={{ color: n.senderName === 'Ava' ? 'var(--cyan-neon)' : 'inherit' }}>{n.senderName}</strong> {n.text}
@@ -1352,12 +1404,22 @@ const CameraView = ({ user, onExit }) => {
     const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
     const [error, setError] = useState<string | null>(null);
     const [mode, setMode] = useState<'video' | 'audio'>('video');
+    const mimeTypeUsed = useRef<string>('video/webm');
 
     useEffect(() => {
         let stream: MediaStream | null = null;
         navigator.mediaDevices.getUserMedia(
             mode === 'video'
-                ? { video: { facingMode, width: { ideal: 720 }, height: { ideal: 1280 } }, audio: true }
+                ? { 
+                    video: { 
+                        facingMode, 
+                        width: { min: 480, ideal: 720, max: 1080 }, 
+                        height: { min: 640, ideal: 1280, max: 1920 },
+                        aspectRatio: { ideal: 0.5625 }, 
+                        frameRate: { ideal: 30 } 
+                    }, 
+                    audio: true 
+                }
                 : { audio: true }
         ).then(s => {
             stream = s;
@@ -1383,11 +1445,12 @@ const CameraView = ({ user, onExit }) => {
             setCountdown(count);
             const cd = setInterval(() => {
                 count--;
-                setCountdown(count);
                 if (count <= 0) {
                     clearInterval(cd);
                     setCountdown(null);
                     startRecording();
+                } else {
+                    setCountdown(count);
                 }
             }, 1000);
         }
@@ -1395,29 +1458,32 @@ const CameraView = ({ user, onExit }) => {
 
     const handlePostVideo = async () => {
         if (!recordedUrl || uploading) return;
-        setUploading(true);
+        
         try {
-            // Solução definitiva Mobile: Ignorar fetch() de URL local e gerar o Blob direto dos chunks limpos da memória.
             if (!chunksRef.current || chunksRef.current.length === 0) {
                 throw new Error("Gravação vazia (0 bytes). Grave novamente.");
             }
 
             const mimeType = mimeTypeUsed.current || (mode === 'audio' ? 'audio/webm' : 'video/webm');
             const finalBlob = new Blob(chunksRef.current, { type: mimeType });
+
+            const MAX_SIZE = 50 * 1024 * 1024; // 50MB
+            if (finalBlob.size > MAX_SIZE) {
+                alert(`File too large (${(finalBlob.size / (1024 * 1024)).toFixed(1)}MB). Max limit is 50MB. ❄️`);
+                return;
+            }
+
+            setUploading(true);
             const extension = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('audio') ? 'm4a' : 'webm';
 
-            // Converter Blob em File para o Supabase Storage
             const fileName = `${user?.uid}_${Date.now()}.${extension}`;
             const fileObj = new File([finalBlob], fileName, {
                 type: finalBlob.type || mimeType,
             });
 
-            console.log("Iniciando upload de vídeo para Supabase:", fileObj.name, "Tamanho:", fileObj.size);
-
-            // Damos um pseudo-feedback da barra (o upload pro supabase é de um soco só no SDK web padrão rápido)
+            console.log("Iniciando upload para Supabase:", fileObj.name, "Tamanho:", fileObj.size);
             setUploadProgress(25);
 
-            // Upload para o bucket 'Videos' do Supabase
             const { data, error: uploadError } = await supabase.storage
                 .from('Videos')
                 .upload(fileName, fileObj, {
@@ -1428,10 +1494,10 @@ const CameraView = ({ user, onExit }) => {
             if (uploadError) {
                 const errObj = uploadError as any;
                 console.error("Erro no Supabase:", uploadError);
-                throw new Error(`Erro Supabase: ${errObj.message || errObj.error || JSON.stringify(errObj)}`);
+                throw new Error(`Upload Error: ${errObj.message || errObj.error || JSON.stringify(errObj)}`);
             }
 
-            setUploadProgress(100);
+            setUploadProgress(70);
 
             // Pegar URL Pública
             const { data: { publicUrl } } = supabase.storage
@@ -1466,14 +1532,13 @@ const CameraView = ({ user, onExit }) => {
             onExit(); // Força fechar o painel da câmera
         } catch (e: any) {
             console.error("Video upload failed detalhado:", e);
-            if (e.message?.includes('Timeout')) {
+            const errMsg = e.message || JSON.stringify(e);
+            if (errMsg.includes('Timeout')) {
                 setError("O upload demorou muito. Verifique sua conexão. ❄️");
-            } else if (e.message?.includes('Erro Supabase')) {
-                setError(e.message); // Exibe o erro real do Supabase
-            } else if (e.code === 'storage/unauthorized') {
-                setError("Acesso Negado! Faltam regras no Firebase Storage. ❄️");
+            } else if (errMsg.includes('Conflict') || errMsg.includes('Duplicate')) {
+                setError("Arquivo duplicado ou erro de conflito no servidor. ❄️");
             } else {
-                setError(`Falha ao subir: ${e.message}`);
+                setError(`Erro no upload (${e.code || 'SUPA_ERR'}): ${errMsg}`);
             }
             setUploading(false);
         }
@@ -1482,40 +1547,37 @@ const CameraView = ({ user, onExit }) => {
     const startRecording = () => {
         try {
             const stream = videoRef.current?.srcObject as MediaStream;
-            if (!stream) return;
+            if (!stream && mode === 'video') return;
 
             let mimeType = mode === 'audio' ? "audio/webm" : "video/webm";
             if (!MediaRecorder.isTypeSupported(mimeType)) {
-                mimeType = mode === 'audio' ? "audio/webm" : "video/webm;codecs=vp8";
+                mimeType = mode === 'audio' ? "audio/mp4" : "video/mp4";
             }
 
-            // Dica de compressão: Ajustando o bitrate para não ficar tão pesado
             const options: MediaRecorderOptions = { mimeType };
-            if (mode === 'video') options.videoBitsPerSecond = 500000;
-
-            const recorder = new MediaRecorder(stream, options);
+            if (mode === 'video') options.videoBitsPerSecond = 1000000;
 
             mimeTypeUsed.current = mimeType;
-
+            const recorder = new MediaRecorder(stream || (new AudioContext().createMediaStreamDestination().stream), options);
+            mediaRecorderRef.current = recorder;
             chunksRef.current = [];
+
             recorder.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
             recorder.onstop = () => {
                 const blob = new Blob(chunksRef.current, { type: mimeType });
                 setRecordedUrl(URL.createObjectURL(blob));
             };
+
             recorder.start(100);
-            mediaRecorderRef.current = recorder;
             setRecording(true);
             setElapsed(0);
             const start = Date.now();
             timerRef.current = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
         } catch (e) {
+            console.error("Recording start error:", e);
             setError("Failed to start recording.");
         }
     };
-
-    // Armazena o tipo localmente para fallback
-    const mimeTypeUsed = useRef<string>('video/webm');
 
     return (
         <div style={{ height: '100dvh', width: '100vw', background: '#000', position: 'fixed', top: 0, left: 0, zIndex: 9999, overflow: 'hidden' }}>
@@ -1527,7 +1589,7 @@ const CameraView = ({ user, onExit }) => {
                 </div>
             ) : recordedUrl ? (
                 <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                    <video src={recordedUrl} controls autoPlay loop style={{ flex: 1, objectFit: 'cover' }} />
+                    <video src={recordedUrl} controls autoPlay loop style={{ flex: 1, objectFit: 'contain', background: '#000' }} />
                     <div style={{ padding: '20px', display: 'flex', gap: '10px', background: '#000' }}>
                         <button onClick={() => setRecordedUrl(null)} disabled={uploading} style={{ flex: 1, padding: '14px', borderRadius: '14px', background: 'rgba(255,255,255,0.1)', color: 'white', border: 'none', opacity: uploading ? 0.5 : 1 }}>Retake</button>
                         <button onClick={handlePostVideo} disabled={uploading} style={{ flex: 1, padding: '14px', background: 'var(--cyan-neon)', borderRadius: '14px', color: '#020817', fontWeight: 700, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', position: 'relative', overflow: 'hidden' }}>
@@ -1541,7 +1603,7 @@ const CameraView = ({ user, onExit }) => {
             ) : (
                 <>
                     {mode === 'video' ? (
-                        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} />
+                        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000', transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} />
                     ) : (
                         <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'radial-gradient(circle, var(--glacial-deep) 0%, #000 100%)' }}>
                             <span className="material-symbols-outlined" style={{ fontSize: '100px', color: 'var(--cyan-neon)', animation: recording ? 'pulse 1.5s infinite' : 'none' }}>mic</span>

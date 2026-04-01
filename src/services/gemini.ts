@@ -23,7 +23,7 @@ export const evaluateComment = async (text: string): Promise<CommentEvaluation> 
     }
 
     try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
         const prompt = `
 You are a moderation and language analysis assistant for a social feed app called Avalanche.
@@ -66,7 +66,7 @@ export const generateAvaResponse = async (context: string, type: 'post' | 'menti
     }
 
     try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
         const prompt = type === 'post'
             ? `You are Ava, a friendly and encouraging native English teacher participating in a social app called Avalanche. A student just made a new post with the text: "${context}". Write a short, encouraging comment (max 2 sentences) complementing their effort, giving a tiny English tip related to their text, or asking a fun follow-up question in English. Use emojis. ❄️`
