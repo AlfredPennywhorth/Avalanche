@@ -59,6 +59,9 @@ const ReelItem: React.FC<ReelItemProps> = ({
     // Ensure Ava's avatar is correctly loaded
     const avaAvatarPath = "/ava-avatar.png";
 
+    const [showPicker, setShowPicker] = useState(false);
+    const userReaction = REACTION_EMOJIS.find(e => post.reactions?.[e]?.includes(user?.uid));
+
     return (
         <div className="reel-item">
             {post.type === 'video' ? (
@@ -176,11 +179,31 @@ const ReelItem: React.FC<ReelItemProps> = ({
                     </div>
                 )}
 
-                <div onClick={() => onReact(post)} className="interaction-btn">
-                    <div className="icon-circle">
-                        <span className="material-symbols-outlined" style={{ fontSize: '32px' }}>add_reaction</span>
+                <div className="interaction-btn" style={{ position: 'relative' }}>
+                    <div onClick={() => setShowPicker(!showPicker)} className="icon-circle" style={{ borderColor: userReaction ? 'var(--cyan-neon)' : 'rgba(255,255,255,0.1)' }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: '32px', color: userReaction ? 'var(--cyan-neon)' : 'white' }}>
+                            {userReaction ? 'add_reaction' : 'mood'}
+                        </span>
                     </div>
                     <span className="sidebar-label">React</span>
+
+                    {showPicker && (
+                        <div className="reaction-picker">
+                            {REACTION_EMOJIS.map(emoji => (
+                                <span 
+                                    key={emoji} 
+                                    className="reaction-option"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onReact(post, emoji);
+                                        setShowPicker(false);
+                                    }}
+                                >
+                                    {emoji}
+                                </span>
+                            ))}
+                        </div>
+                    )}
                 </div>
 
                 {onDelete && (post.authorId === user?.uid || user?.role === 'admin') && (

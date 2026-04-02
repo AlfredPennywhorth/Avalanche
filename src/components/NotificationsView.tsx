@@ -12,21 +12,41 @@ const NotificationsView: React.FC<NotificationsViewProps> = ({ user }) => {
 
     useEffect(() => {
         if (!user?.uid) return;
-        const q = query(
+        
+        // Query com ordenação (requer índice composto: recipientUid ASC, createdAt DESC)
+        const qWithOrder = query(
             collection(db, 'notifications'),
             where('recipientUid', '==', user.uid),
             orderBy('createdAt', 'desc'),
             limit(20)
         );
-        const unsub = onSnapshot(
-            q,
+
+        // Fallback: Query simples sem ordenação (não requer índice composto)
+        const qSimple = query(
+            collection(db, 'notifications'),
+            where('recipientUid', '==', user.uid),
+            limit(20)
+        );
+
+        let unsub = onSnapshot(
+            qWithOrder,
             (snap) => {
                 setNotifications(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                 setLoading(false);
             },
             (error) => {
-                console.error('Notifications query failed:', error);
-                setLoading(false);
+                console.warn('Notifications query WITH ORDER failed (likely missing index):', error);
+                // Tentativa com query simples
+                onSnapshot(qSimple, (snap) => {
+                    // Ordenar manualmente no cliente como alternativa temporária
+                    const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    docs.sort((a: any, b: any) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+                    setNotifications(docs);
+                    setLoading(false);
+                }, (err2) => {
+                    console.error('Simple notifications query also failed:', err2);
+                    setLoading(false);
+                });
             }
         );
         return () => unsub();

@@ -204,7 +204,7 @@ export default function App() {
                         onLike={handleLike}
                         onComment={handleOpenComments}
                         onShare={handleShare}
-                        onReact={(post) => handleReact(post, '❄️')}
+                        onReact={handleReact}
                         onDelete={handleDeletePost}
                         likedPosts={likedPosts}
                         isMuted={isMuted}
@@ -236,7 +236,13 @@ export default function App() {
                     <div className={`nav-item ${view === 'home' ? 'active' : ''}`} onClick={() => { setView('home'); resetHome(); }}>
                         <span className="material-symbols-outlined">home</span>
                     </div>
-                    <div className="nav-item" onClick={resetHome}>
+                    <div className="nav-item" onClick={() => { 
+                        if (view === 'home') {
+                            window.dispatchEvent(new CustomEvent('scroll-to-top'));
+                        } else {
+                            setView('home');
+                        }
+                    }}>
                         <span className="material-symbols-outlined">explore</span>
                     </div>
                     <div className="nav-item create-btn" onClick={() => setView('create')}>
