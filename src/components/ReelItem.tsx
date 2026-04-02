@@ -143,41 +143,41 @@ const ReelItem: React.FC<ReelItemProps> = ({
                 {post.topic && <span style={{ fontSize: '10px', background: 'rgba(0,229,255,0.2)', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--cyan-neon)', color: 'var(--cyan-neon)', fontWeight: 700, textTransform: 'uppercase' }}>{post.topic}</span>}
             </div>
 
-            <div className="reel-actions">
+            <div className="interaction-sidebar">
                 <div onClick={() => onLike(post)} className={`interaction-btn ${isLiked ? 'liked' : ''}`}>
-                    <div className="interaction-icon-wrapper">
+                    <div className="icon-circle">
                         <span className="material-symbols-outlined" style={{ fontSize: '32px', fontVariationSettings: isLiked ? '"FILL" 1' : 'none' }}>favorite</span>
                     </div>
-                    <span className="label">{post.likes?.length || 0}</span>
+                    <span className="sidebar-label">{post.likes?.length || 0}</span>
                 </div>
                 
                 <div onClick={() => onComment(post)} className="interaction-btn">
-                    <div className="interaction-icon-wrapper">
+                    <div className="icon-circle">
                         <span className="material-symbols-outlined" style={{ fontSize: '30px' }}>chat_bubble</span>
                     </div>
-                    <span className="label">{post.commentCount || 0}</span>
+                    <span className="sidebar-label">{post.commentCount || 0}</span>
                 </div>
 
                 <div onClick={() => onShare(post)} className="interaction-btn">
-                    <div className="interaction-icon-wrapper">
+                    <div className="icon-circle">
                         <span className="material-symbols-outlined" style={{ fontSize: '30px' }}>share</span>
                     </div>
-                    <span className="label">Share</span>
+                    <span className="sidebar-label">Share</span>
                 </div>
 
                 <div onClick={() => onReact(post)} className="interaction-btn">
-                    <div className="interaction-icon-wrapper">
+                    <div className="icon-circle">
                         <span className="material-symbols-outlined" style={{ fontSize: '32px' }}>add_reaction</span>
                     </div>
-                    <span className="label">React</span>
+                    <span className="sidebar-label">React</span>
                 </div>
 
                 {onDelete && (
                     <div onClick={() => onDelete(post.id, post.authorId)} className="interaction-btn delete-btn">
-                        <div className="interaction-icon-wrapper">
+                        <div className="icon-circle">
                             <span className="material-symbols-outlined" style={{ fontSize: '28px' }}>delete</span>
                         </div>
-                        <span className="label">Delete</span>
+                        <span className="sidebar-label">Delete</span>
                     </div>
                 )}
             </div>

@@ -95,14 +95,46 @@ body {
   justify-content: center;
   backdrop-filter: blur(10px);
   cursor: pointer;
-  border: 1px solid rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.interaction-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 0.2s ease;
+}
+
+.interaction-btn:active {
+  transform: scale(0.9);
+}
+
+.interaction-btn.liked .icon-circle {
+  background: rgba(255, 46, 99, 0.2);
+  border-color: #FF2E63;
+  color: #FF2E63;
+}
+
+.interaction-btn.liked span.material-symbols-outlined {
+  color: #FF2E63;
+  text-shadow: 0 0 15px rgba(255, 46, 99, 0.5);
+}
+
+.icon-circle:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.1) translateY(-2px);
+  border-color: var(--cyan-neon);
+  box-shadow: 0 5px 15px rgba(0, 229, 255, 0.3);
 }
 
 .sidebar-label {
   font-size: 11px;
   font-weight: 700;
-  margin-top: 4px;
+  margin-top: 6px;
   text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+  color: white;
+  letter-spacing: 0.5px;
 }
 
 .nav-bar {
