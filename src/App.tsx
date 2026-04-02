@@ -25,6 +25,8 @@ import {
 
 import { evaluateComment, generateAvaResponse } from './services/gemini';
 import { supabase } from './services/supabase';
+import HomeFeed from './components/HomeFeed';
+import CommentDrawer from './components/CommentDrawer';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const APP_VERSION = 'v1.4.0';
@@ -37,10 +39,11 @@ const DEMO_POST_ID = 'demo-post-001';
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const renderTextWithMentions = (text: string) => {
     if (!text) return null;
-    const parts = text.split(/(@\w+)/g);
+    const parts = text.split(/(@\w+)/gi);
     return parts.map((part, i) => {
         if (part.startsWith('@')) {
-            return <span key={i} style={{ color: 'var(--cyan-neon)', fontWeight: 600 }}>{part}</span>;
+            const isAva = part.toLowerCase() === '@ava';
+            return <span key={i} style={{ color: isAva ? 'var(--cyan-neon)' : '#00E5FF', fontWeight: isAva ? 800 : 600, textShadow: isAva ? '0 0 10px rgba(0,229,255,0.5)' : 'none' }}>{part}</span>;
         }
         return part;
     });
@@ -54,6 +57,13 @@ export default function App() {
 
     const [allPosts, setAllPosts] = useState<any[]>([]);
     const [unreadCount, setUnreadCount] = useState(0);
+    const [likedPosts, setLikedPosts] = useState<string[]>([]);
+    const [isMuted, setIsMuted] = useState(true);
+    const [avaSpeaking, setAvaSpeaking] = useState<string | null>(null);
+    const [isCommentDrawerOpen, setIsCommentDrawerOpen] = useState(false);
+    const [activePostId, setActivePostId] = useState<string | null>(null);
+    const [reactingToPost, setReactingToPost] = useState<string | null>(null);
+    const [allUsers, setAllUsers] = useState<any[]>([]);
 
     useEffect(() => {
         const unsub = onAuthStateChanged(auth, async (u) => {
@@ -94,6 +104,20 @@ export default function App() {
         return () => unsub();
     }, [user?.uid]);
 
+    useEffect(() => {
+        const unsub = onSnapshot(collection(db, 'users'), snap => {
+            setAllUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        });
+        return () => unsub();
+    }, []);
+
+    useEffect(() => {
+        if (!user?.uid) return;
+        // Sync likes for current user
+        const liked = allPosts.filter(p => p.likes?.includes(user?.uid)).map(p => p.id);
+        setLikedPosts(liked);
+    }, [allPosts, user?.uid]);
+
     const logout = async () => {
         await signOut(auth);
         setView('home');
@@ -114,21 +138,148 @@ export default function App() {
         return <AuthView />;
     }
 
+    // ─── Handlers ─────────────────────────────────────────────────────────────
+    const speakAva = (text: string, commentId: string) => {
+        if (!window.speechSynthesis) return;
+        window.speechSynthesis.cancel();
+        const cleanText = text.replace(/@\w+/g, '').trim();
+        const synth = window.speechSynthesis;
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.lang = 'en-US';
+        const voices = synth.getVoices();
+        const englishVoice = 
+            voices.find(v => v.lang === 'en-US' && v.name.includes('Google')) || 
+            voices.find(v => v.lang === 'en-GB' && v.name.includes('Google')) ||
+            voices.find(v => v.lang.startsWith('en-US')) ||
+            voices.find(v => v.lang.startsWith('en'));
+        if (englishVoice) utterance.voice = englishVoice;
+        utterance.rate = 1.0;
+        utterance.pitch = 1.15;
+        utterance.onstart = () => setAvaSpeaking(commentId);
+        utterance.onend = () => setAvaSpeaking(null);
+        utterance.onerror = () => setAvaSpeaking(null);
+        synth.speak(utterance);
+    };
+
+    const handleLike = async (post: any) => {
+        if (!user?.uid || post.authorId === user?.uid) return;
+        const postRef = doc(db, 'posts', post.id);
+        const isLiked = likedPosts.includes(post.id);
+        await updateDoc(postRef, {
+            likes: isLiked ? arrayRemove(user.uid) : arrayUnion(user.uid)
+        });
+        if (!isLiked && post.authorId !== user.uid) {
+            await updateDoc(doc(db, 'users', user.uid), { snowPoints: increment(1) });
+            await updateDoc(doc(db, 'users', post.authorId), { snowPoints: increment(1) });
+        }
+    };
+
+    const handleReact = async (post: any, emoji: string) => {
+        if (!user?.uid) return;
+        setReactingToPost(null);
+        const postRef = doc(db, 'posts', post.id);
+        const reactions = post.reactions || {};
+        const users = reactions[emoji] || [];
+        const hasReacted = users.includes(user.uid);
+        await updateDoc(postRef, {
+            [`reactions.${emoji}`]: hasReacted ? arrayRemove(user.uid) : arrayUnion(user.uid)
+        });
+        if (!hasReacted && post.authorId && post.authorId !== user.uid) {
+            await updateDoc(doc(db, 'users', user.uid), { snowPoints: increment(1) });
+            await updateDoc(doc(db, 'users', post.authorId), { snowPoints: increment(2) });
+        }
+    };
+
+    const handleShare = async (post: any) => {
+        const shareData = { title: 'Avalanche', text: `Check this tip by ${post.authorName}! ❄️`, url: window.location.href };
+        try {
+            if (navigator.share) await navigator.share(shareData);
+            else {
+                await navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`);
+                const event = new CustomEvent('show-toast', { detail: 'Link copied! 📋' });
+                window.dispatchEvent(event);
+            }
+        } catch (e) { console.error(e); }
+    };
+
+    const handleDeletePost = async (postId: string, authorId: string) => {
+        if (authorId !== user?.uid) return;
+        if (!window.confirm("Are you sure you want to delete this post? ❄️")) return;
+        try {
+            const { deleteDoc } = await import('firebase/firestore');
+            await deleteDoc(doc(db, 'posts', postId));
+        } catch (e) { console.error("Delete failed:", e); }
+    };
+
+    const handleFollow = (userId: string) => {
+        // Logic for following users
+        console.log("Following user:", userId);
+    };
+
+    const handleOpenComments = (postId: string) => {
+        setActivePostId(postId);
+        setIsCommentDrawerOpen(true);
+    };
+
+    const handleCloseComments = () => {
+        setIsCommentDrawerOpen(false);
+        setActivePostId(null);
+    };
+
+    const handleSpeakAva = (text: string, commentId: string) => {
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-US';
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.onstart = () => setAvaSpeaking(commentId);
+            utterance.onend = () => setAvaSpeaking(null);
+            utterance.onerror = () => setAvaSpeaking(null);
+            window.speechSynthesis.speak(utterance);
+        }
+    };
+
+    const resetHome = () => {
+        if (view !== 'home' && view !== 'discover') {
+            setView('home');
+        }
+        // Force scroll to top and reset state
+        window.dispatchEvent(new CustomEvent('scroll-to-top'));
+        setIsCommentDrawerOpen(false);
+        setActivePostId(null);
+    };
+
     const renderContent = () => {
         switch (view) {
-            case 'discover': return <DiscoverView user={user} />;
-            case 'create': return <CreatePostView user={user} onExit={() => setView('home')} />;
+            case 'create': return <CreatePostView user={user} onExit={resetHome} onOpenComments={handleOpenComments} setActivePostId={setActivePostId} setIsCommentDrawerOpen={setIsCommentDrawerOpen} setAvaSpeaking={setAvaSpeaking} />;
             case 'leaderboard': return <LeaderboardView user={user} />;
             case 'notifications': return <NotificationsView user={user} />;
             case 'profile': return <ProfileView user={user} allPosts={allPosts} onLogout={logout} />;
-            default: return <HomeFeed user={user} allPosts={allPosts} />;
+            default: return (
+                <HomeFeed 
+                    user={user} 
+                    allPosts={allPosts}
+                    onLike={handleLike}
+                    onComment={handleOpenComments}
+                    onShare={handleShare}
+                    onReact={(post) => setReactingToPost(reactingToPost === post.id ? null : post.id)}
+                    onDelete={handleDeletePost}
+                    likedPosts={likedPosts}
+                    isMuted={isMuted}
+                    setIsMuted={setIsMuted}
+                    renderTextWithMentions={renderTextWithMentions}
+                    avaSpeaking={avaSpeaking}
+                    onFollow={handleFollow}
+                />
+            );
         }
     };
 
     return (
         <div className="discovery-screen">
             <header className="header" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60px' }}>
-                <h1 className="text-glacial" style={{ fontSize: '20px', letterSpacing: '2px', fontWeight: 900, cursor: 'pointer' }} onClick={() => setView('home')}>AVALANCHE</h1>
+                <h1 className="text-glacial" style={{ fontSize: '20px', letterSpacing: '2px', fontWeight: 900, cursor: 'pointer' }} onClick={resetHome}>AVALANCHE</h1>
             </header>
 
             <main style={{ height: 'calc(100vh - 60px)', marginTop: '60px' }}>
@@ -137,11 +288,11 @@ export default function App() {
 
             {view !== 'create' && (
                 <nav className="nav-bar">
-                    <div className={`nav-item ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}>
+                    <div className={`nav-item ${view === 'home' || view === 'discover' ? 'active' : ''}`} onClick={resetHome}>
                         <span className="material-symbols-outlined">home</span>
                     </div>
-                    <div className={`nav-item ${view === 'discover' ? 'active' : ''}`} onClick={() => setView('discover')}>
-                        <span className="material-symbols-outlined">explore</span>
+                    <div className={`nav-item ${view === 'discover' ? 'disabled' : ''}`} style={{ opacity: 0.3, cursor: 'not-allowed' }}>
+                        <span className="material-symbols-outlined" title="Discover merged to Home">explore</span>
                     </div>
                     <div className="nav-item create-btn" onClick={() => setView('create')}>
                         <span className="material-symbols-outlined">add</span>
@@ -176,6 +327,16 @@ export default function App() {
                     </div>
                 </nav>
             )}
+            {/* MODAL / DRAWER ELEMENTS */}
+            <CommentDrawer
+                isOpen={isCommentDrawerOpen}
+                onClose={handleCloseComments}
+                postId={activePostId}
+                user={user}
+                avaSpeaking={avaSpeaking}
+                onSpeakAva={handleSpeakAva}
+                renderTextWithMentions={renderTextWithMentions}
+            />
         </div>
     );
 }
@@ -363,7 +524,7 @@ const AuthView = () => {
 };
 
 // ─── CreatePostView ────────────────────────────────────────────────────────────
-const CreatePostView = ({ user, onExit }) => {
+const CreatePostView = ({ user, onExit, onOpenComments, setActivePostId, setIsCommentDrawerOpen, setAvaSpeaking }: any) => {
     const [mode, setMode] = useState<'choose' | 'text' | 'video'>('choose');
     const [uploading, setUploading] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -391,9 +552,10 @@ const CreatePostView = ({ user, onExit }) => {
                 .from('Videos')
                 .getPublicUrl(fileName);
 
-            await addDoc(collection(db, 'posts'), {
+            const docRef = await addDoc(collection(db, 'posts'), {
                 type: isVideo ? 'video' : 'image',
                 videoUrl: publicUrl,
+                content: isVideo ? "Check out this video! ❄️" : "Look at this! 📸",
                 authorId: user.uid,
                 authorName: user.name || user.email,
                 authorAvatar: user.avatar || '🧊',
@@ -410,6 +572,26 @@ const CreatePostView = ({ user, onExit }) => {
                     snowPoints: increment(isVideo ? 15 : 5)
                 });
             }
+
+            // Ava AI Response
+            setTimeout(async () => {
+                const response = await generateAvaResponse(isVideo ? "video post" : "image post", 'post');
+                if (response) {
+                    await addDoc(collection(db, 'posts', docRef.id, 'comments'), {
+                        authorId: 'ava-ai',
+                        authorName: 'Ava',
+                        authorAvatar: '❄️',
+                        authorPhoto: '/ava-avatar.png',
+                        authorRole: 'Snow Moderator',
+                        text: response,
+                        createdAt: serverTimestamp(),
+                        replies: []
+                    });
+                    await updateDoc(doc(db, 'posts', docRef.id), { 
+                        commentCount: increment(1) 
+                    });
+                }
+            }, 1500);
 
             setProgress(100);
             setTimeout(onExit, 500);
@@ -433,7 +615,7 @@ const CreatePostView = ({ user, onExit }) => {
     }
 
     if (mode === 'video') return <CameraView user={user} onExit={onExit} />;
-    if (mode === 'text') return <TextPostView user={user} onExit={onExit} />;
+    if (mode === 'text') return <TextPostView user={user} onExit={onExit} onOpenComments={onOpenComments} setActivePostId={setActivePostId} setIsCommentDrawerOpen={setIsCommentDrawerOpen} setAvaSpeaking={setAvaSpeaking} />;
 
     return (
         <div className="fade-in" style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '32px', gap: '20px', background: 'var(--bg-main)' }}>
@@ -490,7 +672,7 @@ const CreatePostView = ({ user, onExit }) => {
 };
 
 // ─── TextPostView ──────────────────────────────────────────────────────────────
-const TextPostView = ({ user, onExit }) => {
+const TextPostView = ({ user, onExit, onOpenComments, setActivePostId, setIsCommentDrawerOpen, setAvaSpeaking }: any) => {
     const [text, setText] = useState('');
     const [selectedTopic, setSelectedTopic] = useState('');
     const [posting, setPosting] = useState(false);
@@ -524,14 +706,21 @@ const TextPostView = ({ user, onExit }) => {
         const val = e.target.value;
         setText(val);
         const pos = e.target.selectionStart ?? val.length;
-        const before = val.slice(0, pos);
-        const atIdx = before.lastIndexOf('@');
-        if (atIdx !== -1 && !before.slice(atIdx).includes(' ')) {
-            setMentionQuery(before.slice(atIdx + 1));
-            setMentionStart(atIdx);
-        } else {
-            setMentionQuery(null);
+        const textBeforeCursor = val.slice(0, pos);
+        
+        // Find the last '@' that isn't followed by a space before the cursor
+        const lastAtIndices = [...textBeforeCursor.matchAll(/@/g)];
+        const lastAt = lastAtIndices.length > 0 ? lastAtIndices[lastAtIndices.length - 1].index : -1;
+        
+        if (lastAt !== undefined && lastAt !== -1) {
+            const query = textBeforeCursor.slice(lastAt + 1);
+            if (!query.includes(' ') && !query.includes('\n')) {
+                setMentionQuery(query);
+                setMentionStart(lastAt);
+                return;
+            }
         }
+        setMentionQuery(null);
     };
 
     const insertMention = (u: any) => {
@@ -606,12 +795,17 @@ const TextPostView = ({ user, onExit }) => {
                 if (avaResponse) {
                     await addDoc(collection(db, 'posts', docRef.id, 'comments'), {
                         authorId: 'ava-ai',
-                        author: 'Ava',
+                        authorName: 'Ava',
+                        authorAvatar: '❄️',
+                        authorPhoto: '/ava-avatar.png',
+                        authorRole: 'Snow Moderator',
                         text: isMentioningAva ? `@${(user.name || user.email).split(' ')[0]} ${avaResponse}` : avaResponse,
                         createdAt: serverTimestamp(),
                         replies: []
                     });
-                    await updateDoc(doc(db, 'posts', docRef.id), { commentCount: 1 });
+                    await updateDoc(doc(db, 'posts', docRef.id), { 
+                        commentCount: increment(1) 
+                    });
                     await addDoc(collection(db, 'notifications'), {
                         recipientUid: user.uid,
                         senderName: 'Ava',
@@ -624,7 +818,7 @@ const TextPostView = ({ user, onExit }) => {
                         createdAt: serverTimestamp()
                     });
                 }
-            }, 1500); // Reduced delay for presentation
+            }, 1500); 
 
         } catch (e) {
             console.error("Post creation failed:", e);
@@ -632,6 +826,8 @@ const TextPostView = ({ user, onExit }) => {
             alert("Oops! Failed to post. Check your connection. ❄️");
         }
     };
+
+
 
     const insertEmoji = (em: string) => {
         setText(prev => prev + em);
@@ -722,518 +918,7 @@ const TextPostView = ({ user, onExit }) => {
     );
 };
 
-// ─── HomeFeed ──────────────────────────────────────────────────────────────────
-const HomeFeed = ({ user, allPosts }) => {
-    const [loading, setLoading] = useState(false);
-    const [likedPosts, setLikedPosts] = useState<string[]>([]);
-    const [showComments, setShowComments] = useState(false);
-    const [activePostId, setActivePostId] = useState<string | null>(null);
-    const [comments, setComments] = useState<any[]>([]);
-    const [commentText, setCommentText] = useState('');
-    const [replyingTo, setReplyingTo] = useState<string | null>(null);
-    const commentInputRef = useRef<HTMLInputElement>(null);
-    const [expandedPost, setExpandedPost] = useState<string | null>(null);
-    const [allUsers, setAllUsers] = useState<any[]>([]);
-    const [reactingToPost, setReactingToPost] = useState<string | null>(null);
-    const REACTION_EMOJIS = ['🔥', '❄️', '🤙', '💡', '😂', '❤️'];
-
-    useEffect(() => {
-        const unsub = onSnapshot(collection(db, 'users'), snap => {
-            setAllUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        });
-        return () => unsub();
-    }, []);
-    const [shareToast, setShareToast] = useState(false);
-    const [avaSpeaking, setAvaSpeaking] = useState<string | null>(null);
-
-    const speakAva = (text: string, commentId: string) => {
-        if (!window.speechSynthesis) return;
-        window.speechSynthesis.cancel();
-        
-        // Strip mentions from text for speech
-        const cleanText = text.replace(/@\w+/g, '').trim();
-        const synth = window.speechSynthesis;
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        
-        // Set the language strictly to en-US
-        utterance.lang = 'en-US';
-        
-        // Find a native English voice
-        const voices = synth.getVoices();
-        // Priority: US English Google voice, then UK English, then any English voice
-        const englishVoice = 
-            voices.find(v => v.lang === 'en-US' && v.name.includes('Google')) || 
-            voices.find(v => v.lang === 'en-GB' && v.name.includes('Google')) ||
-            voices.find(v => v.lang.startsWith('en-US')) ||
-            voices.find(v => v.lang.startsWith('en'));
-
-        if (englishVoice) {
-            utterance.voice = englishVoice;
-        }
-        
-        utterance.rate = 1.0;
-        utterance.pitch = 1.15; // Slightly higher for a friendly AI feel
-        
-        utterance.onstart = () => setAvaSpeaking(commentId);
-        utterance.onend = () => setAvaSpeaking(null);
-        utterance.onerror = (e) => {
-            console.error("Speech error:", e);
-            setAvaSpeaking(null);
-        };
-        
-        synth.speak(utterance);
-    };
-
-    const handleDeletePost = async (postId: string, authorId: string) => {
-        if (authorId !== user?.uid) return;
-        if (!window.confirm("Are you sure you want to delete this post? ❄️")) return;
-        
-        try {
-            const { deleteDoc } = await import('firebase/firestore');
-            await deleteDoc(doc(db, 'posts', postId));
-        } catch (e) {
-            console.error("Delete failed:", e);
-            alert("Failed to delete post.");
-        }
-    };
-
-    useEffect(() => {
-        // Sync likes for current user
-        const liked = allPosts.filter(p => p.likes?.includes(user?.uid)).map(p => p.id);
-        setLikedPosts(liked);
-    }, [allPosts, user?.uid]);
-
-    useEffect(() => {
-        if (!activePostId) return;
-        const q = query(collection(db, 'posts', activePostId, 'comments'), orderBy('createdAt', 'asc'));
-        const unsub = onSnapshot(q, (snap) => {
-            setComments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        });
-        return () => unsub();
-    }, [activePostId]);
-
-    const handleLike = async (post: any) => {
-        if (!user?.uid || post.authorId === user?.uid) return;
-        const postRef = doc(db, 'posts', post.id);
-        const isLiked = likedPosts.includes(post.id);
-        await updateDoc(postRef, {
-            likes: isLiked ? arrayRemove(user.uid) : arrayUnion(user.uid)
-        });
-
-        // Points for liking/being liked
-        if (!isLiked && post.authorId !== user.uid) {
-            await updateDoc(doc(db, 'users', user.uid), { snowPoints: increment(1) });
-            await updateDoc(doc(db, 'users', post.authorId), { snowPoints: increment(1) });
-        }
-    };
-
-    const handleReact = async (post: any, emoji: string) => {
-        if (!user?.uid) return;
-        setReactingToPost(null);
-        const postRef = doc(db, 'posts', post.id);
-        const reactions = post.reactions || {};
-        const users = reactions[emoji] || [];
-        const hasReacted = users.includes(user.uid);
-        await updateDoc(postRef, {
-            [`reactions.${emoji}`]: hasReacted ? arrayRemove(user.uid) : arrayUnion(user.uid)
-        });
-        // Points: +1 for reactor, +2 for post author (only on new reactions)
-        if (!hasReacted && post.authorId && post.authorId !== user.uid) {
-            await updateDoc(doc(db, 'users', user.uid), { snowPoints: increment(1) });
-            await updateDoc(doc(db, 'users', post.authorId), { snowPoints: increment(2) });
-        }
-    };
-
-    const handleVerifyPost = async (postId: string, authorId: string) => {
-        if (user?.role !== 'teacher' || authorId === user?.uid) return;
-        const postRef = doc(db, 'posts', postId);
-        await updateDoc(postRef, { verified: true });
-        await updateDoc(doc(db, 'users', authorId), { snowPoints: increment(50) }); // Big bonus for verified explanations
-    };
-
-    const handleShare = async (post: any) => {
-        const shareData = { title: 'Avalanche', text: `Check this tip by ${post.authorName}! ❄️`, url: window.location.href };
-        try {
-            if (navigator.share) await navigator.share(shareData);
-            else {
-                await navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`);
-                setShareToast(true);
-                setTimeout(() => setShareToast(false), 2000);
-            }
-        } catch (e) { console.error(e); }
-    };
-
-    const handleSendComment = async () => {
-        const text = commentText.trim();
-        if (!text || !user?.uid || !activePostId) return;
-
-        const mentionList = [...text.matchAll(/@(\w+)/g)].map(m => m[1]);
-
-        if (replyingTo !== null) {
-            const parentRef = doc(db, 'posts', activePostId, 'comments', replyingTo);
-            await updateDoc(parentRef, { replies: arrayUnion({ id: Date.now(), author: (user.name || user.email).split(' ')[0], text }) });
-            setReplyingTo(null);
-        } else {
-            await addDoc(collection(db, 'posts', activePostId, 'comments'), {
-                authorId: user.uid,
-                author: (user.name || user.email).split(' ')[0],
-                text,
-                createdAt: serverTimestamp(),
-                replies: []
-            });
-            const postRef = doc(db, 'posts', activePostId);
-            const post = allPosts.find(p => p.id === activePostId);
-            await updateDoc(postRef, { commentCount: (post?.commentCount || 0) + 1 });
-
-            // Points for commenting using Gemini
-            const evaluation = await evaluateComment(text);
-            let points = 0;
-            if (evaluation.isConstructive) {
-                points = evaluation.isEnglish ? 10 : 5;
-            }
-            if (points > 0) {
-                await updateDoc(doc(db, 'users', user.uid), { snowPoints: increment(points) });
-            }
-        }
-
-        // Ava AI Mention Handling 
-        if (mentionList.some(m => m.toLowerCase() === 'ava')) {
-            setTimeout(async () => {
-                const avaResponse = await generateAvaResponse(text, 'mention');
-                if (avaResponse) {
-                    await addDoc(collection(db, 'posts', activePostId, 'comments'), {
-                        authorId: 'ava-ai',
-                        author: 'Ava',
-                        text: `@${(user.name || user.email).split(' ')[0]} ${avaResponse}`,
-                        createdAt: serverTimestamp(),
-                        replies: []
-                    });
-                    const postRef = doc(db, 'posts', activePostId);
-                    const post = allPosts.find(p => p.id === activePostId);
-                    await updateDoc(postRef, { commentCount: (post?.commentCount || 0) + 1 });
-
-                    await addDoc(collection(db, 'notifications'), {
-                        recipientUid: user.uid,
-                        senderName: 'Ava',
-                        senderPhoto: '/ava-avatar.png',
-                        senderAvatar: '❄️',
-                        type: 'mention',
-                        postId: activePostId,
-                        text: `replied to your mention!`,
-                        read: false,
-                        createdAt: serverTimestamp()
-                    });
-                }
-            }, 1500);
-        }
-
-        // Send notifications for mentions in comment
-        for (const username of mentionList) {
-            // Robust match: first name or email prefix
-            const targetUser = allUsers.find(u => {
-                const firstName = (u.name || '').split(' ')[0].toLowerCase();
-                const emailPrefix = (u.email || '').split('@')[0].toLowerCase();
-                return firstName === username.toLowerCase() || emailPrefix === username.toLowerCase();
-            });
-
-            if (targetUser && targetUser.id !== user.uid) {
-                await addDoc(collection(db, 'notifications'), {
-                    recipientUid: targetUser.id,
-                    senderName: user.name || 'Avalanche User',
-                    senderAvatar: user.avatar || '🧊',
-                    senderPhoto: user.photo || null,
-                    type: 'mention',
-                    postId: activePostId,
-                    text: `mentioned you in a comment! ❄️`,
-                    read: false,
-                    createdAt: serverTimestamp()
-                });
-            }
-        }
-
-        setCommentText('');
-    };
-
-    return (
-        <div className="discovery-screen" style={{ height: '100%', overflowY: 'hidden', paddingBottom: '0' }}>
-            <div className="reels-container">
-                {loading ? (
-                    <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
-                        <span className="material-symbols-outlined" style={{ animation: 'spin 2s linear infinite', color: 'var(--cyan-neon)', fontSize: '48px' }}>ac_unit</span>
-                    </div>
-                ) : allPosts.length === 0 ? (
-                    <div style={{ display: 'flex', height: '100%', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
-                        <span className="material-symbols-outlined" style={{ fontSize: '64px' }}>history_edu</span>
-                        <p style={{ marginTop: '16px' }}>Be the first to create the avalanche!</p>
-                    </div>
-                ) : (
-                    allPosts.map((post: any) => {
-                        const isLiked = likedPosts.includes(post.id);
-                        const isAva = post.authorName === 'Ava' || post.authorId === 'ava-ai';
-
-                        return (
-                            <div key={post.id} className="reel-item">
-                                {post.type === 'video' ? (
-                                    <video
-                                        src={post.videoUrl}
-                                        autoPlay
-                                        loop
-                                        muted
-                                        playsInline
-                                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                    />
-                                ) : post.type === 'audio' ? (
-                                    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(180deg, var(--glacial-deep) 0%, var(--bg-main) 100%)' }}>
-                                        <div style={{ width: '120px', height: '120px', borderRadius: '50%', background: 'rgba(0,229,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '40px', boxShadow: '0 0 40px rgba(0,229,255,0.2)', border: '2px solid rgba(0,229,255,0.3)' }}>
-                                            <span className="material-symbols-outlined" style={{ fontSize: '60px', color: 'var(--cyan-neon)' }}>mic</span>
-                                        </div>
-                                        <audio
-                                            src={post.videoUrl}
-                                            controls
-                                            style={{ width: '80%', maxWidth: '300px', filter: 'invert(1) hue-rotate(180deg) brightness(1.5)' }}
-                                        />
-                                    </div>
-                                ) : (
-                                    <div style={{ padding: '40px', textAlign: 'center', background: 'var(--bg-main)', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                        <div style={{ maxWidth: '400px' }}>
-                                            <p style={{ fontSize: '24px', fontWeight: 300, lineHeight: 1.4, fontStyle: 'italic', marginBottom: '20px' }}>
-                                                "{renderTextWithMentions(post.content)}"
-                                            </p>
-                                            <div style={{ height: '2px', width: '60px', background: 'var(--cyan-neon)', margin: '0 auto', opacity: 0.5 }}></div>
-                                        </div>
-                                    </div>
-                                )}
-
-                                <div className="reel-content-overlay">
-                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
-                                        {post.verified && <span className="points-badge verified-badge"><span className="material-symbols-outlined" style={{ fontSize: '12px' }}>verified</span> VERIFIED</span>}
-                                        {post.type === 'video' && <span className="points-badge">+15 SNOW POINTS</span>}
-                                        {isAva && <span className="points-badge" style={{ background: '#FFD700', color: '#000' }}>AI MODERATOR</span>}
-                                    </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                        <div className={`avatar-wrapper ${avaSpeaking === post.id ? 'speaking-glow' : ''}`} style={{ width: '40px', height: '40px', borderRadius: '50%', border: isAva ? '2px solid var(--cyan-neon)' : '2px solid white', overflow: 'hidden', transition: 'all 0.3s ease' }}>
-                                            {isAva ? <img src="/ava-avatar.png" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (post.authorPhoto ? <img src={post.authorPhoto} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <div style={{ width: '100%', height: '100%', background: 'var(--glacial-mid)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{post.authorAvatar || '🧊'}</div>)}
-                                        </div>
-                                        <div>
-                                            <h3 style={{ fontSize: '16px', fontWeight: 700, margin: 0, textShadow: '0 2px 4px rgba(0,0,0,0.8)', color: isAva ? 'var(--cyan-neon)' : 'white' }}>@{isAva ? 'ava' : (post.authorName || 'user').split(' ')[0].toLowerCase()}</h3>
-                                            <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.7)', margin: 0, textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>{post.authorSchool}</p>
-                                        </div>
-                                    </div>
-                                    {post.type === 'video' && <p style={{ marginTop: '14px', fontSize: '14px', maxWidth: '80%', lineHeight: 1.4, textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>Check out this English tip! 🔥 ❄️</p>}
-                                </div>
-
-                                <div className="interaction-sidebar">
-                                    {user?.role === 'teacher' && !post.verified && post.authorId !== user.uid && (
-                                        <div onClick={() => handleVerifyPost(post.id, post.authorId)} className="interaction-btn">
-                                            <div className="interaction-icon-wrapper" style={{ borderColor: '#4CAF50', color: '#4CAF50' }}>
-                                                <span className="material-symbols-outlined" style={{ fontSize: '28px' }}>verified</span>
-                                            </div>
-                                            <span className="label">Verify</span>
-                                        </div>
-                                    )}
-
-                                    <div onClick={() => handleLike(post)} className="interaction-btn" style={{ opacity: post.authorId === user.uid ? 0.3 : 1, cursor: post.authorId === user.uid ? 'default' : 'pointer' }}>
-                                        <div className="interaction-icon-wrapper" style={{ color: isLiked ? '#ff4b6e' : 'white' }}>
-                                            <span className="material-symbols-outlined" style={{ fontSize: '28px', fontVariationSettings: isLiked ? "'FILL' 1" : "'FILL' 0" }}>favorite</span>
-                                        </div>
-                                        <span className="label">{post.likes?.length || 0}</span>
-                                    </div>
-
-                                    <div onClick={() => { setActivePostId(post.id); setShowComments(true); }} className="interaction-btn">
-                                        <div className="interaction-icon-wrapper">
-                                            <span className="material-symbols-outlined" style={{ fontSize: '28px' }}>chat_bubble</span>
-                                        </div>
-                                        <span className="label">{post.commentCount || 0}</span>
-                                    </div>
-
-                                    <div onClick={() => handleShare(post)} className="interaction-btn">
-                                        <div className="interaction-icon-wrapper">
-                                            <span className="material-symbols-outlined" style={{ fontSize: '28px' }}>share</span>
-                                        </div>
-                                        <span className="label">Share</span>
-                                    </div>
-
-                                    <div onClick={() => setReactingToPost(reactingToPost === post.id ? null : post.id)} className="interaction-btn">
-                                        <div className="interaction-icon-wrapper" style={{ fontSize: '24px' }}>😊</div>
-                                        <span className="label">React</span>
-                                    </div>
-
-                                    {post.authorId === user.uid && (
-                                        <div onClick={() => handleDeletePost(post.id, post.authorId)} className="interaction-btn delete-btn">
-                                            <div className="interaction-icon-wrapper">
-                                                <span className="material-symbols-outlined" style={{ fontSize: '28px' }}>delete</span>
-                                            </div>
-                                            <span className="label">Delete</span>
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Reaction Picker */}
-                                {reactingToPost === post.id && (
-                                    <div style={{ position: 'absolute', right: '70px', bottom: '220px', background: 'rgba(10,15,35,0.95)', border: '1px solid rgba(0,229,255,0.25)', borderRadius: '40px', padding: '10px 14px', display: 'flex', gap: '10px', zIndex: 100, boxShadow: '0 4px 30px rgba(0,0,0,0.7)', backdropFilter: 'blur(10px)' }}>
-                                        {REACTION_EMOJIS.map(emoji => {
-                                            const reacted = (post.reactions?.[emoji] || []).includes(user?.uid);
-                                            return (
-                                                <span key={emoji} onClick={() => handleReact(post, emoji)}
-                                                    style={{ fontSize: '26px', cursor: 'pointer', opacity: reacted ? 1 : 0.7, transform: reacted ? 'scale(1.2)' : 'scale(1)', transition: 'all 0.15s ease', filter: reacted ? 'drop-shadow(0 0 6px rgba(0,229,255,0.6))' : 'none' }}
-                                                >{emoji}</span>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-
-                                {/* Reaction Counters */}
-                                {post.reactions && Object.keys(post.reactions).some(k => post.reactions[k]?.length > 0) && (
-                                    <div style={{ position: 'absolute', bottom: '80px', left: '16px', display: 'flex', gap: '6px', flexWrap: 'wrap', zIndex: 10 }}>
-                                        {REACTION_EMOJIS.filter(e => post.reactions?.[e]?.length > 0).map(emoji => (
-                                            <span key={emoji} onClick={() => handleReact(post, emoji)}
-                                                style={{ background: 'rgba(0,0,0,0.55)', borderRadius: '20px', padding: '3px 10px', fontSize: '14px', cursor: 'pointer', backdropFilter: 'blur(6px)', border: (post.reactions?.[emoji] || []).includes(user?.uid) ? '1px solid var(--cyan-neon)' : '1px solid rgba(255,255,255,0.15)' }}
-                                            >
-                                                {emoji} {post.reactions[emoji].length}
-                                            </span>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    })
-                )}
-            </div>
-
-            {showComments && activePostId && (
-                <div className="comments-drawer frosted active">
-                    <div style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                        <h3 style={{ margin: 0 }}>Comments ❄️</h3>
-                        <span className="material-symbols-outlined" style={{ cursor: 'pointer' }} onClick={() => { setShowComments(false); setActivePostId(null); setReplyingTo(null); }}>close</span>
-                    </div>
-
-                    <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
-                        {comments.length === 0 ? <p style={{ textAlign: 'center', opacity: 0.5, marginTop: '40px' }}>No comments yet. Be the first to start the avalanche!</p> : (
-                            comments.map(c => {
-                                const isAva = c.authorId === 'ava-ai';
-                                return (
-                                    <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
-                                        <div style={{ display: 'flex', gap: '10px' }}>
-                                            <div style={{ width: '32px', height: '32px', borderRadius: '50%', overflow: 'hidden', border: isAva ? '1px solid var(--cyan-neon)' : '1px solid rgba(255,255,255,0.1)', flexShrink: 0 }}>
-                                                {isAva ? (
-                                                    <img src="/ava-avatar.png" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                                ) : (
-                                                    c.authorPhoto ? <img src={c.authorPhoto} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <div style={{ width: '100%', height: '100%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px' }}>{c.author?.charAt(0) || '🧊'}</div>
-                                                )}
-                                            </div>
-                                            <div className="frosted" style={{
-                                                flex: 1,
-                                                padding: '12px 14px', borderRadius: '18px',
-                                                background: isAva ? 'rgba(0,229,255,0.05)' : 'rgba(255,255,255,0.03)',
-                                                border: isAva ? '1px solid rgba(0,229,255,0.2)' : 'none'
-                                            }}>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                                                    <p style={{ fontWeight: 700, fontSize: '13px', color: isAva ? 'var(--cyan-neon)' : 'var(--cyan-neon)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                        {c.author}
-                                                        {isAva && <span style={{ fontSize: '10px', background: 'rgba(0,229,255,0.15)', padding: '1px 6px', borderRadius: '8px' }}>AI ❄️</span>}
-                                                        {isAva && (
-                                                            <span 
-                                                                className="material-symbols-outlined" 
-                                                                style={{ fontSize: '18px', cursor: 'pointer', color: avaSpeaking === c.id ? 'var(--cyan-neon)' : 'rgba(255,255,255,0.5)', marginLeft: '4px' }}
-                                                                onClick={() => speakAva(c.text, c.id)}
-                                                            >
-                                                                {avaSpeaking === c.id ? 'volume_up' : 'volume_down'}
-                                                            </span>
-                                                        )}
-                                                    </p>
-                                                    {!isAva && (
-                                                        <span style={{ fontSize: '11px', color: 'var(--text-dim)', cursor: 'pointer' }} onClick={() => { setReplyingTo(c.id); setTimeout(() => commentInputRef.current?.focus(), 50); }}>Reply</span>
-                                                    )}
-                                                    {isAva && c.ackedBy?.includes(user?.uid) && (
-                                                        <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>✅ read</span>
-                                                    )}
-                                                </div>
-                                                <p style={{ fontSize: '14px', color: 'white' }}>{renderTextWithMentions(c.text)}</p>
-                                                {isAva && !c.ackedBy?.includes(user?.uid) && (
-                                                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                                                        <button
-                                                            onClick={async () => await updateDoc(doc(db, 'posts', activePostId, 'comments', c.id), { ackedBy: arrayUnion(user.uid) })}
-                                                            style={{ padding: '6px 14px', borderRadius: '20px', background: 'rgba(0,229,255,0.1)', border: '1px solid rgba(0,229,255,0.3)', color: 'var(--cyan-neon)', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
-                                                        >✅ Got it!</button>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                        {(c.replies || []).map((r: any) => (
-                                            <div key={r.id} className="frosted" style={{ padding: '10px', marginTop: '4px', marginLeft: '42px', borderLeft: '2px solid var(--cyan-neon)', borderRadius: '14px', background: 'rgba(255,255,255,0.01)' }}>
-                                                <p style={{ fontWeight: 600, fontSize: '12px', color: 'white' }}>{r.author}</p>
-                                                <p style={{ fontSize: '13px', color: 'var(--text-dim)' }}>{renderTextWithMentions(r.text)}</p>
-                                            </div>
-                                        ))}
-                                    </div>
-                                );
-                            })
-                        )}
-                    </div>
-
-                    <div style={{ padding: '16px 20px 40px', background: 'rgba(0,0,0,0.4)', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-                        <div style={{ display: 'flex', gap: '10px' }}>
-                            <input
-                                ref={commentInputRef}
-                                type="text"
-                                placeholder={replyingTo ? "Write a reply..." : "Write a comment..."}
-                                value={commentText}
-                                onChange={e => setCommentText(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && handleSendComment()}
-                                style={{ flex: 1, background: 'rgba(255,255,255,0.06)', border: '1px solid var(--cyan-neon)', borderRadius: '24px', padding: '12px 18px', color: 'white', outline: 'none' }}
-                            />
-                            <button onClick={handleSendComment} style={{ background: 'var(--cyan-neon)', color: '#020817', border: 'none', borderRadius: '50%', width: '44px', height: '44px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                <span className="material-symbols-outlined">send</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {shareToast && (
-                <div style={{ position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)', background: 'var(--cyan-neon)', color: 'var(--bg-main)', padding: '8px 20px', borderRadius: '20px', fontWeight: 700, zIndex: 5000, boxShadow: '0 4px 20px rgba(0,229,255,0.4)' }}>
-                    Link copied! 📋
-                </div>
-            )}
-        </div>
-    );
-
-};
-
 // ─── Discover/Notifications/Profile Views ──────────────────────────────────────
-const DiscoverView = ({ user }) => {
-    const [search, setSearch] = useState('');
-    const [users, setUsers] = useState<any[]>([]);
-
-    useEffect(() => {
-        const unsub = onSnapshot(collection(db, 'users'), (snap) => {
-            setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(u => u.id !== user?.uid));
-        });
-        return () => unsub();
-    }, [user?.uid]);
-
-    const filtered = users.filter(u => (u.name || '').toLowerCase().includes(search.toLowerCase()) || (u.school || '').toLowerCase().includes(search.toLowerCase()));
-
-    return (
-        <div className="fade-in" style={{ padding: '16px', height: '100%', overflowY: 'auto' }}>
-            <h2>Discover ❄️</h2>
-            <input type="text" placeholder="Search friends or schools..." value={search} onChange={e => setSearch(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.06)', border: '1px solid var(--cyan-neon)', borderRadius: '20px', padding: '10px 16px', color: 'white', margin: '16px 0' }} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingBottom: '80px' }}>
-                {filtered.map(u => (
-                    <div key={u.id} className="frosted ice-texture" style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: '14px' }}>
-                        <div style={{ width: '52px', height: '52px', borderRadius: '50%', background: 'var(--glacial-mid)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', overflow: 'hidden' }}>
-                            {u.photo ? <img src={u.photo} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (u.avatar || '🧊')}
-                        </div>
-                        <div>
-                            <p style={{ fontWeight: 700 }}>{u.name}</p>
-                            <p style={{ fontSize: '12px', color: 'var(--text-dim)' }}>{u.role} · {u.school}</p>
-                        </div>
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-};
 
 const NotificationsView = ({ user }) => {
     const [notifications, setNotifications] = useState<any[]>([]);
@@ -1399,6 +1084,7 @@ const CameraView = ({ user, onExit }) => {
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [elapsed, setElapsed] = useState(0);
+    const [caption, setCaption] = useState('');
     const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
     const [countdown, setCountdown] = useState<number | null>(null);
     const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
@@ -1413,10 +1099,8 @@ const CameraView = ({ user, onExit }) => {
                 ? { 
                     video: { 
                         facingMode, 
-                        width: { min: 480, ideal: 720, max: 1080 }, 
-                        height: { min: 640, ideal: 1280, max: 1920 },
-                        aspectRatio: { ideal: 0.5625 }, 
-                        frameRate: { ideal: 30 } 
+                        aspectRatio: { ideal: 0.5625 },
+                        width: { ideal: 720 }
                     }, 
                     audio: true 
                 }
@@ -1481,12 +1165,12 @@ const CameraView = ({ user, onExit }) => {
                 type: finalBlob.type || mimeType,
             });
 
-            console.log("Iniciando upload para Supabase:", fileObj.name, "Tamanho:", fileObj.size);
+            console.log("Iniciando upload para Supabase:", fileName, "Tamanho:", finalBlob.size);
             setUploadProgress(25);
 
             const { data, error: uploadError } = await supabase.storage
                 .from('Videos')
-                .upload(fileName, fileObj, {
+                .upload(fileName, finalBlob, {
                     cacheControl: '3600',
                     upsert: false
                 });
@@ -1507,8 +1191,9 @@ const CameraView = ({ user, onExit }) => {
             const downloadUrl = publicUrl;
             console.log("Upload de vídeo completo! URL Supabase:", downloadUrl);
 
-            await addDoc(collection(db, 'posts'), {
+            const docRef = await addDoc(collection(db, 'posts'), {
                 type: mode,
+                content: caption.trim() || (mode === 'video' ? 'Check out this video! ❄️' : 'Listen to this tip! 🎙️'),
                 videoUrl: downloadUrl, // Reusing field name for simplicity, contains Media URL
                 authorId: user.uid,
                 authorName: user.name || user.email,
@@ -1521,22 +1206,45 @@ const CameraView = ({ user, onExit }) => {
                 verified: false
             });
 
+            const postId = docRef.id;
+
             // Reward 15 Snow Points
             if (user?.uid) {
                 await updateDoc(doc(db, 'users', user.uid), {
-                    snowPoints: increment(15)
+                    snowPoints: increment(10)
                 });
             }
 
-            setUploading(false); // Libera da tela
-            onExit(); // Força fechar o painel da câmera
+            // TRIGGER AVA RESPONSE FOR MEDIA
+            const response = await generateAvaResponse(caption || 'Check this out!', 'post');
+            
+            if (response) {
+                // Add AI response as comment
+                await addDoc(collection(db, 'posts', postId, 'comments'), {
+                    authorId: 'ava-ai',
+                    authorName: 'Ava',
+                    authorAvatar: '❄️',
+                    authorPhoto: '/ava-avatar.png',
+                    authorRole: 'Snow Moderator',
+                    text: `@${(user.name || user.email).split(' ')[0]} ${response}`,
+                    createdAt: serverTimestamp(),
+                    replies: []
+                });
+                await updateDoc(doc(db, 'posts', postId), {
+                    commentCount: increment(1)
+                });
+            }
+
+            setUploading(false);
+            setRecordedUrl(null);
+            onExit();
         } catch (e: any) {
-            console.error("Video upload failed detalhado:", e);
+            console.error("Media upload failed detalhado:", e);
             const errMsg = e.message || JSON.stringify(e);
-            if (errMsg.includes('Timeout')) {
-                setError("O upload demorou muito. Verifique sua conexão. ❄️");
-            } else if (errMsg.includes('Conflict') || errMsg.includes('Duplicate')) {
-                setError("Arquivo duplicado ou erro de conflito no servidor. ❄️");
+            if (errMsg.includes('Failed to fetch')) {
+                setError("O Supabase bloqueou o upload por CORS. Verifique no dashboard se o domínio avalanche-app-26ee2.web.app está permitido no Storage. ❄️");
+            } else if (errMsg.includes('Timeout')) {
+                setError("Falha de rede ou timeout. Verifique sua conexão. ❄️");
             } else {
                 setError(`Erro no upload (${e.code || 'SUPA_ERR'}): ${errMsg}`);
             }
@@ -1588,22 +1296,59 @@ const CameraView = ({ user, onExit }) => {
                     <button onClick={onExit} style={{ marginTop: '20px', padding: '10px 20px', borderRadius: '10px', background: 'var(--cyan-neon)', border: 'none' }}>Go Back</button>
                 </div>
             ) : recordedUrl ? (
-                <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                    <video src={recordedUrl} controls autoPlay loop style={{ flex: 1, objectFit: 'contain', background: '#000' }} />
-                    <div style={{ padding: '20px', display: 'flex', gap: '10px', background: '#000' }}>
-                        <button onClick={() => setRecordedUrl(null)} disabled={uploading} style={{ flex: 1, padding: '14px', borderRadius: '14px', background: 'rgba(255,255,255,0.1)', color: 'white', border: 'none', opacity: uploading ? 0.5 : 1 }}>Retake</button>
-                        <button onClick={handlePostVideo} disabled={uploading} style={{ flex: 1, padding: '14px', background: 'var(--cyan-neon)', borderRadius: '14px', color: '#020817', fontWeight: 700, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', position: 'relative', overflow: 'hidden' }}>
+                <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#000' }}>
+                    <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {mode === 'video' ? (
+                            <video src={recordedUrl} autoPlay loop playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                            <div style={{ padding: '40px', textAlign: 'center' }}>
+                                <span className="material-symbols-outlined" style={{ fontSize: '100px', color: 'var(--cyan-neon)' }}>audio_file</span>
+                                <p style={{ marginTop: '20px', color: 'var(--cyan-neon)' }}>Audio recorded successfully! 🎙️</p>
+                            </div>
+                        )}
+                        
+                        {/* Overlay para Legenda */}
+                        {!uploading && (
+                            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '20px 20px 100px' }}>
+                                <div className="frosted neon-border" style={{ padding: '16px', borderRadius: '24px', background: 'rgba(2, 8, 23, 0.7)', backdropFilter: 'blur(20px)' }}>
+                                    <p style={{ fontSize: '12px', fontWeight: 700, color: 'var(--cyan-neon)', marginBottom: '8px', letterSpacing: '1px' }}>LEGENDA / MENÇÃO</p>
+                                    <textarea 
+                                        value={caption}
+                                        onChange={(e) => setCaption(e.target.value)}
+                                        placeholder="Diga algo ou mencione a @ava... ❄️"
+                                        style={{ 
+                                            width: '100%', 
+                                            background: 'transparent', 
+                                            border: 'none', 
+                                            color: 'white', 
+                                            fontSize: '16px', 
+                                            outline: 'none', 
+                                            resize: 'none',
+                                            minHeight: '80px',
+                                            fontFamily: 'inherit'
+                                        }}
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <div style={{ padding: '20px 20px 40px', display: 'flex', gap: '12px', background: 'rgba(2, 8, 23, 0.95)', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        <button onClick={() => { setRecordedUrl(null); setCaption(''); }} disabled={uploading} style={{ flex: 1, padding: '16px', borderRadius: '18px', background: 'rgba(255,255,255,0.08)', color: 'white', border: 'none', fontWeight: 600 }}>Tentar novamente</button>
+                        <button onClick={handlePostVideo} disabled={uploading} style={{ flex: 2, padding: '16px', background: 'var(--cyan-neon)', borderRadius: '18px', color: '#020817', fontWeight: 800, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', position: 'relative', overflow: 'hidden', boxShadow: '0 0 20px rgba(0,229,255,0.4)' }}>
                             {uploading && (
                                 <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${uploadProgress}%`, background: 'rgba(255,255,255,0.3)', transition: 'width 0.2s ease' }} />
                             )}
-                            {uploading ? <><span className="material-symbols-outlined" style={{ animation: 'spin 1s linear infinite' }}>ac_unit</span> {Math.round(uploadProgress)}%</> : 'Post ❄️'}
+                            {uploading ? <><span className="material-symbols-outlined animation-spin">ac_unit</span> {Math.round(uploadProgress)}%</> : (
+                                <><span className="material-symbols-outlined">send</span> Postar na Avalanche</>
+                            )}
                         </button>
                     </div>
                 </div>
             ) : (
                 <>
                     {mode === 'video' ? (
-                        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000', transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} />
+                        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', background: '#000', transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }} />
                     ) : (
                         <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'radial-gradient(circle, var(--glacial-deep) 0%, #000 100%)' }}>
                             <span className="material-symbols-outlined" style={{ fontSize: '100px', color: 'var(--cyan-neon)', animation: recording ? 'pulse 1.5s infinite' : 'none' }}>mic</span>
