@@ -216,8 +216,9 @@ export default function App() {
         console.log("Following user:", userId);
     };
 
-    const handleOpenComments = (postId: string) => {
-        setActivePostId(postId);
+    const handleOpenComments = (postOrId: string | any) => {
+        const id = typeof postOrId === 'string' ? postOrId : postOrId.id;
+        setActivePostId(id);
         setIsCommentDrawerOpen(true);
     };
 
