@@ -6,7 +6,7 @@ import { collection, onSnapshot } from 'firebase/firestore';
 
 const AVATARS = ['🧊', '❄️', '🏔️', '⛄', '🌨️', '🐧', '🦊', '🎭', '🦦', '🐶', '🍕', '🏂', '🎸', '🎮', '🎧', '⚡', '🥑', '🐼', '🐯', '🛸', '🚀', '👽'];
 const INTEREST_SUGGESTIONS = ['Slang', 'Games', 'Travels', 'Music', 'Movies', 'Tech', 'Sports', 'Food', 'Memes', 'Fashion', 'Books', 'Science'];
-const APP_VERSION = 'v1.4.3';
+const APP_VERSION = 'v1.5.0';
 
 interface ProfileViewProps {
     user: any;
