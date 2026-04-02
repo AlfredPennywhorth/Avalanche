@@ -35,28 +35,44 @@ const CommentDrawer: React.FC<CommentDrawerProps> = ({
     const [comments, setComments] = useState<any[]>([]);
     const [newComment, setNewComment] = useState('');
     const [sending, setSending] = useState(false);
+    const [loading, setLoading] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        if (!postId || !isOpen) return;
+        if (!postId || !isOpen) {
+            setComments([]);
+            setLoading(false);
+            return;
+        }
 
-        const q = query(
-            collection(db, 'posts', postId, 'comments'),
-            orderBy('createdAt', 'asc')
-        );
+        setLoading(true);
+        try {
+            const q = query(
+                collection(db, 'posts', postId, 'comments'),
+                orderBy('createdAt', 'asc')
+            );
 
-        const unsub = onSnapshot(q, (snap) => {
-            const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            setComments(fetched);
-            // Scroll to bottom
-            setTimeout(() => {
-                if (scrollRef.current) {
-                    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-                }
-            }, 100);
-        });
+            const unsubscribe = onSnapshot(q, (snap) => {
+                const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                setComments(fetched);
+                setLoading(false);
+                
+                // Scroll to bottom
+                setTimeout(() => {
+                    if (scrollRef.current) {
+                        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                    }
+                }, 100);
+            }, (error) => {
+                console.error("Error fetching comments:", error);
+                setLoading(false);
+            });
 
-        return () => unsub();
+            return () => unsubscribe();
+        } catch (err) {
+            console.error("Failed to setup comments listener:", err);
+            setLoading(false);
+        }
     }, [postId, isOpen]);
 
     const handleSend = async (e: React.FormEvent) => {

@@ -81,12 +81,12 @@ const HomeFeed: React.FC<HomeFeedProps> = ({
     };
 
     return (
-        <div className="discovery-screen" style={{ height: '100%', overflowY: 'hidden', paddingBottom: '0' }}>
-            <div className="reels-container" ref={containerRef} style={{ height: '100%', overflowY: 'scroll', scrollSnapType: 'y mandatory' }}>
+        <div className="discovery-screen">
+            <div className="reels-container" ref={containerRef}>
                 {allPosts.length === 0 ? (
-                    <div style={{ display: 'flex', height: '100%', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
-                        <span className="material-symbols-outlined" style={{ fontSize: '64px' }}>history_edu</span>
-                        <p style={{ marginTop: '16px' }}>Be the first to create the avalanche!</p>
+                    <div className="empty-feed">
+                        <span className="material-symbols-outlined">history_edu</span>
+                        <p>Be the first to create the avalanche!</p>
                     </div>
                 ) : (
                     allPosts.map((post: any) => (
@@ -94,7 +94,7 @@ const HomeFeed: React.FC<HomeFeedProps> = ({
                             key={post.id} 
                             ref={registerPostRef} 
                             data-post-id={post.id}
-                            style={{ height: '100%', scrollSnapAlign: 'start', scrollSnapStop: 'always' }}
+                            className="reel-item"
                         >
                             <ReelItem
                                 post={post}
