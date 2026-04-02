@@ -9,7 +9,8 @@ import {
     serverTimestamp, 
     doc, 
     updateDoc, 
-    increment 
+    increment,
+    deleteDoc 
 } from 'firebase/firestore';
 import { evaluateComment, generateAvaResponse } from '../services/gemini';
 
@@ -144,6 +145,22 @@ const CommentDrawer: React.FC<CommentDrawerProps> = ({
         }
     };
 
+    const handleDeleteComment = async (commentId: string) => {
+        if (!postId) return;
+        if (!window.confirm("Are you sure you want to delete this comment? ❄️")) return;
+
+        try {
+            await deleteDoc(doc(db, 'posts', postId, 'comments', commentId));
+            
+            // Update total count
+            await updateDoc(doc(db, 'posts', postId), {
+                commentCount: increment(-1)
+            });
+        } catch (error) {
+            console.error("Delete comment failed:", error);
+        }
+    };
+
     return (
         <div className={`comments-drawer ${isOpen ? 'active' : ''}`}>
             <div style={{ 
@@ -199,8 +216,33 @@ const CommentDrawer: React.FC<CommentDrawerProps> = ({
                                         <span style={{ fontSize: '9px', background: 'var(--cyan-neon)', color: '#000', padding: '1px 5px', borderRadius: '4px', fontWeight: 900 }}>AI</span>
                                     )}
                                     <span style={{ fontSize: '10px', opacity: 0.4 }}>
-                                        {c.createdAt?.toDate?.() ? c.createdAt.toDate().toLocaleTimeString([], { hour: '2' as const, minute: '2-digit' as const }) : '...'}
+                                        {(() => {
+                                            const ts = c.createdAt;
+                                            if (!ts) return '...';
+                                            const d = ts.toDate ? ts.toDate() : new Date(ts.seconds * 1000);
+                                            if (isNaN(d.getTime())) return '...';
+                                            const h = String(d.getHours()).padStart(2, '0');
+                                            const m = String(d.getMinutes()).padStart(2, '0');
+                                            return `${h}:${m}`;
+                                        })()}
                                     </span>
+                                    {(c.authorId === user?.uid || user?.role === 'admin') && (
+                                        <button 
+                                            onClick={() => handleDeleteComment(c.id)}
+                                            style={{ 
+                                                background: 'none', 
+                                                border: 'none', 
+                                                color: '#FF3B30', 
+                                                opacity: 0.5,
+                                                cursor: 'pointer',
+                                                padding: '0 4px',
+                                                display: 'flex',
+                                                marginLeft: 'auto'
+                                            }}
+                                        >
+                                            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>delete</span>
+                                        </button>
+                                    )}
                                 </div>
                                 <p style={{ fontSize: '14px', marginTop: '4px', opacity: 0.9, lineHeight: 1.4 }}>
                                     {renderTextWithMentions(c.text)}

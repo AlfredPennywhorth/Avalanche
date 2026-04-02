@@ -11,8 +11,8 @@ interface ReelItemProps {
     onReact: (post: any) => void;
     onDelete?: (id: string, authorId: string) => void;
     user: any;
-    renderTextWithMentions: (text: string) => any;
     isLiked: boolean;
+    onSpeakAva: (text: string, commentId: string) => void;
     avaSpeaking: string | null;
 }
 
@@ -31,6 +31,7 @@ const ReelItem: React.FC<ReelItemProps> = ({
     user,
     renderTextWithMentions,
     isLiked,
+    onSpeakAva,
     avaSpeaking
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -103,8 +104,7 @@ const ReelItem: React.FC<ReelItemProps> = ({
                     <audio
                         ref={audioRef}
                         src={post.videoUrl}
-                        controls
-                        style={{ width: '80%', maxWidth: '300px', filter: 'invert(1) hue-rotate(180deg) brightness(1.5)' }}
+                        style={{ display: 'none' }}
                     />
                 </div>
             ) : (
@@ -165,6 +165,17 @@ const ReelItem: React.FC<ReelItemProps> = ({
                     <span className="sidebar-label">Share</span>
                 </div>
 
+                {isAva && (
+                    <div onClick={() => onSpeakAva(post.content, post.id)} className={`interaction-btn ${avaSpeaking === post.id ? 'active' : ''}`} style={{ color: 'var(--cyan-neon)' }}>
+                        <div className="icon-circle" style={{ borderColor: 'var(--cyan-neon)', background: avaSpeaking === post.id ? 'rgba(0,229,255,0.2)' : 'transparent' }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: '30px', animation: avaSpeaking === post.id ? 'pulse 1s infinite' : 'none' }}>
+                                {avaSpeaking === post.id ? 'volume_up' : 'graphic_eq'}
+                            </span>
+                        </div>
+                        <span className="sidebar-label">Listen</span>
+                    </div>
+                )}
+
                 <div onClick={() => onReact(post)} className="interaction-btn">
                     <div className="icon-circle">
                         <span className="material-symbols-outlined" style={{ fontSize: '32px' }}>add_reaction</span>
@@ -172,12 +183,12 @@ const ReelItem: React.FC<ReelItemProps> = ({
                     <span className="sidebar-label">React</span>
                 </div>
 
-                {onDelete && (
-                    <div onClick={() => onDelete(post.id, post.authorId)} className="interaction-btn delete-btn">
-                        <div className="icon-circle">
-                            <span className="material-symbols-outlined" style={{ fontSize: '28px' }}>delete</span>
+                {onDelete && (post.authorId === user?.uid || user?.role === 'admin') && (
+                    <div onClick={() => onDelete(post.id, post.authorId)} className="interaction-btn delete-btn" style={{ marginTop: '10px' }}>
+                        <div className="icon-circle" style={{ borderColor: 'rgba(255, 59, 48, 0.4)' }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: '24px', color: '#FF3B30' }}>delete</span>
                         </div>
-                        <span className="sidebar-label">Delete</span>
+                        <span className="sidebar-label" style={{ color: '#FF3B30' }}>Delete</span>
                     </div>
                 )}
             </div>

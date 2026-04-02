@@ -16,6 +16,13 @@ export interface CommentEvaluation {
     error?: boolean;
 }
 
+const withTimeout = <T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> => {
+    return Promise.race([
+        promise,
+        new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs))
+    ]);
+};
+
 export const evaluateComment = async (text: string): Promise<CommentEvaluation> => {
     if (!genAI) {
         console.warn('Gemini is not initialized.');
@@ -23,7 +30,7 @@ export const evaluateComment = async (text: string): Promise<CommentEvaluation> 
     }
 
     try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'models/gemini-1.5-flash' });
 
         const prompt = `
 You are a moderation and language analysis assistant for a social feed app called Avalanche.
@@ -40,22 +47,29 @@ Format:
 Comment: "${text}"
 `;
 
-        const result = await model.generateContent(prompt);
+        const result = await withTimeout(model.generateContent(prompt), 8000, null);
+        if (!result) return { error: true, isEnglish: true, isConstructive: true };
+
         const responseText = result.response.text();
 
-        // Strip markdown if AI returned markdown block (e.g. \`\`\`json ... \`\`\`)
+        // Strip markdown if AI returned markdown block (e.g. ```json ... ```)
         const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(cleanJson);
-
-        return {
-            isEnglish: !!parsed.isEnglish,
-            isConstructive: !!parsed.isConstructive,
-            reason: parsed.reason
-        };
+        try {
+            const parsed = JSON.parse(cleanJson);
+            return {
+                isEnglish: !!parsed.isEnglish,
+                isConstructive: !!parsed.isConstructive,
+                reason: parsed.reason
+            };
+        } catch (e) {
+            console.error("Failed to parse Gemini JSON:", responseText);
+            return { error: true, isEnglish: true, isConstructive: true };
+        }
 
     } catch (error) {
         console.error('Error evaluating comment with Gemini:', error);
-        return { error: true, isEnglish: false, isConstructive: true };
+        // Permissive fallback: if API fails, allow the comment
+        return { error: true, isEnglish: true, isConstructive: true };
     }
 };
 
@@ -66,14 +80,14 @@ export const generateAvaResponse = async (context: string, type: 'post' | 'menti
     }
 
     try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const model = genAI.getGenerativeModel({ model: 'models/gemini-1.5-flash' });
 
         const prompt = type === 'post'
             ? `You are Ava, a friendly and encouraging native English teacher participating in a social app called Avalanche. A student just made a new post with the text: "${context}". Write a short, encouraging comment (max 2 sentences) complementing their effort, giving a tiny English tip related to their text, or asking a fun follow-up question in English. Use emojis. ❄️`
             : `You are Ava, a friendly English teacher participating in an app called Avalanche. A student mentioned you in a comment saying: "${context}". Reply directly to them in a short, friendly, and helpful manner (max 2 sentences). Use emojis. ❄️`;
 
-        const result = await model.generateContent(prompt);
-        return result.response.text().trim();
+        const result = await withTimeout(model.generateContent(prompt), 8000, null);
+        return result ? result.response.text().trim() : null;
     } catch (error: any) {
         const status = error?.status || error?.httpStatusCode || error?.code || 'unknown';
         const message = error?.message || JSON.stringify(error);
